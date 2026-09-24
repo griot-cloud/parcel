@@ -215,6 +215,20 @@ async fn end_to_end() {
     assert_eq!(again.data_hash, v.data_hash);
     assert_eq!(again.failures, v.failures);
 
+    // A verifier holding only the bundle reproduces the verdict over the same data.
+    let reg = engine.get("sales/orders").unwrap();
+    let bundle = parcel_engine::bundle::Bundle::new(&reg.doc, &schema(), &reg.compilation).unwrap();
+    let bundle = parcel_engine::bundle::Bundle::from_json(&bundle.to_json().unwrap()).unwrap();
+    bundle.verify().unwrap();
+    let plan = bundle
+        .validation_plan(&parcel_engine::bundle::session().task_ctx())
+        .unwrap();
+    let verified = engine.validate_with("sales/orders", plan).await.unwrap();
+    assert_eq!(
+        (verified.valid, &verified.failures, &verified.data_hash),
+        (v.valid, &v.failures, &v.data_hash)
+    );
+
     // globex sees only its own consistent rows, with suppression, as sums per region.
     let sql = r#"SELECT region, SUM(amount_cents) AS total, COUNT(*) AS n FROM "sales/orders" GROUP BY region ORDER BY region"#;
     let res = engine.query(sql, &analyst("globex")).await.unwrap();

@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use datafusion::arrow::array::{Array, ArrayRef, Float64Array, UInt64Array};
 use datafusion::arrow::datatypes::DataType;
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::Result as DFResult;
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::functions_aggregate::expr_fn::count;
 use datafusion::logical_expr::{
     ColumnarValue, Expr, LogicalPlan, LogicalPlanBuilder, Operator, ScalarFunctionArgs, ScalarUDF,

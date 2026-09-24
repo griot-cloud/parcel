@@ -7,6 +7,7 @@
 
 pub mod binding;
 pub mod budget;
+pub mod bundle;
 pub mod differential;
 pub mod engine;
 pub mod error;

@@ -97,6 +97,15 @@ pub struct Envelope {
     pub budgets: BTreeMap<String, f64>,
 }
 
+struct Prepared {
+    ctx: SessionContext,
+    plan: LogicalPlan,
+    resolutions: Vec<Resolution>,
+    k: Option<u64>,
+    has_aggregate: bool,
+    budgets: BTreeMap<String, f64>,
+}
+
 pub struct QueryResult {
     pub batches: Vec<RecordBatch>,
     pub envelope: Envelope,
@@ -120,6 +129,52 @@ impl Engine {
             contracts: BTreeMap::new(),
             budgets: BudgetStore::default(),
         }
+    }
+
+    /// Open a workspace: every contract under `<base>/contracts/` whose data has been written
+    /// is recompiled against the schema its manifest recorded. The others are returned as pending.
+    pub fn open(base: impl Into<PathBuf>) -> Result<(Engine, Vec<(PathBuf, String)>)> {
+        let mut engine = Engine::new(base);
+        let mut pending = Vec::new();
+        let dir = engine.base.join("contracts");
+        let mut paths: Vec<PathBuf> = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+            Err(_) => Vec::new(),
+        };
+        paths.retain(|p| {
+            p.extension()
+                .is_some_and(|e| e == "yaml" || e == "yml" || e == "json")
+        });
+        paths.sort();
+        for path in paths {
+            let source = std::fs::read_to_string(&path)?;
+            let doc = ContractDoc::parse(&source).map_err(|d| EngineError::Compile(vec![d]))?;
+            let root = {
+                let raw = doc.binding.parquet.trim_start_matches("file://");
+                let p = std::path::Path::new(raw);
+                if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    engine.base.join(p)
+                }
+            };
+            match Manifest::load(&root)? {
+                Some(m) if !m.row_schema.is_empty() => {
+                    let schema = crate::manifest::schema_from_defs(&m.row_schema)?;
+                    engine.register_contract(&source, &schema)?;
+                }
+                _ => pending.push((path, source)),
+            }
+        }
+        Ok((engine, pending))
+    }
+
+    pub fn base(&self) -> &std::path::Path {
+        &self.base
+    }
+
+    pub fn budgets(&self) -> &BudgetStore {
+        &self.budgets
     }
 
     pub fn contracts(&self) -> impl Iterator<Item = &Registered> {
@@ -254,6 +309,7 @@ impl Engine {
             breached: verdict.breached.clone(),
             stats: verdict.stats.clone(),
             data_hash: verdict.data_hash.clone(),
+            row_schema: crate::manifest::schema_to_defs(&cc.row_schema),
             files: entries,
         }
         .save(&root)?;
@@ -266,12 +322,19 @@ impl Engine {
 
     /// Run the contract's validation plan over its binding and return the verdict (design 9.2).
     pub async fn validate(&self, name: &str) -> Result<Verdict> {
+        let plan = self.get(name)?.compilation.validation.plan.clone();
+        self.validate_with(name, plan).await
+    }
+
+    /// Run a validation plan obtained elsewhere (e.g. decoded from a bundle) over the contract's data.
+    /// This is what a certificate verifier does: same plan, same data, same verdict.
+    pub async fn validate_with(&self, name: &str, validation_plan: LogicalPlan) -> Result<Verdict> {
         let r = self.get(name)?;
         let cc = &r.compilation.contract;
         let root = self.root(cc);
         let ctx = Self::session();
         let provider = binding::provider(cc, &root)?;
-        let plan = bind_binding(r.compilation.validation.plan.clone(), cc, provider)?;
+        let plan = bind_binding(validation_plan, cc, provider)?;
         let batches = ctx.execute_logical_plan(plan).await?.collect().await?;
         let batch = batches
             .iter()
@@ -475,8 +538,13 @@ impl Engine {
         Ok(r.compilation.contract.exposed_schema.clone())
     }
 
-    /// Run SQL in which every table is a contract.
-    pub async fn query(&self, sql: &str, caller: &Caller) -> Result<QueryResult> {
+    /// Resolve every contract the SQL names, register their views, and plan the query with shapes applied.
+    async fn prepare(
+        &self,
+        sql: &str,
+        caller: &Caller,
+        budgets_store: &BudgetStore,
+    ) -> Result<Prepared> {
         let ctx = Self::session();
         let state = ctx.state();
         let statement = state.sql_to_statement(sql, &datafusion::config::Dialect::Generic)?;
@@ -515,12 +583,41 @@ impl Engine {
             .filter(|s| matches!(s, ShapeOp::Noise { .. }))
             .collect();
         if !noise.is_empty() {
-            plan = shape::apply_noise(plan, &noise, caller, &self.budgets, &mut budgets)?;
+            plan = shape::apply_noise(plan, &noise, caller, budgets_store, &mut budgets)?;
         }
         let has_aggregate = shape::has_aggregate(&plan);
         if let (Some(k), true) = (k, has_aggregate) {
             plan = shape::suppress_groups(plan, k)?;
         }
+        Ok(Prepared {
+            ctx,
+            plan,
+            resolutions,
+            k,
+            has_aggregate,
+            budgets,
+        })
+    }
+
+    /// The optimised physical plan a query would run, as text: shows pushed-down filters and pruning.
+    pub async fn explain(&self, sql: &str, caller: &Caller) -> Result<String> {
+        let p = self.prepare(sql, caller, &BudgetStore::default()).await?;
+        let physical = p.ctx.state().create_physical_plan(&p.plan).await?;
+        Ok(datafusion::physical_plan::displayable(physical.as_ref())
+            .indent(true)
+            .to_string())
+    }
+
+    /// Run SQL in which every table is a contract.
+    pub async fn query(&self, sql: &str, caller: &Caller) -> Result<QueryResult> {
+        let Prepared {
+            ctx,
+            plan,
+            resolutions,
+            k,
+            has_aggregate,
+            budgets,
+        } = self.prepare(sql, caller, &self.budgets).await?;
         let df = ctx.execute_logical_plan(plan).await?;
         let mut batches = df.collect().await?;
         if let (Some(k), false) = (k, has_aggregate)

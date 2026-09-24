@@ -1,25 +1,27 @@
 [package]
-name = "parcel-engine"
-description = "Reference executor for parcel contracts on DataFusion: write, validate, query"
+name = "parcel-cli"
+description = "The parcel command line: check, compile, write, validate and query data contracts"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "parcel"
+path = "src/main.rs"
+
 [dependencies]
 parcel-core = { path = "../parcel-core", version = "0.0.1" }
 parcel-runtime = { path = "../parcel-runtime", version = "0.0.1" }
-datafusion = { version = "55.1.0", default-features = true }
-cel.workspace = true
-chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+parcel-engine = { path = "../parcel-engine", version = "0.0.1" }
+datafusion = "55.1.0"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+clap = { version = "4", features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
+yaml_serde.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-futures = "0.3"
-datafusion-proto = "55.1.0"
-hex.workspace = true
 
 [dev-dependencies]
-tempfile = "3.27.0"
+tempfile = "3"

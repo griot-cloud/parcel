@@ -3,7 +3,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use std::str::FromStr;
+
 use chrono::{DateTime, Utc};
+use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use serde::{Deserialize, Serialize};
 
 pub const MANIFEST_FILE: &str = "_parcel_manifest.json";
@@ -42,7 +45,43 @@ pub struct Manifest {
     pub stats: BTreeMap<String, serde_json::Value>,
     /// Hash over the bytes of every file, in path order: what a certificate signs.
     pub data_hash: String,
+    /// The row schema the contract was compiled against, so a restarted engine can recompile.
+    #[serde(default)]
+    pub row_schema: Vec<ColumnDef>,
     pub files: Vec<FileEntry>,
+}
+
+/// One column of a persisted Arrow schema. `type` is Arrow's display form, which parses back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ColumnDef {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub data_type: String,
+    pub nullable: bool,
+}
+
+pub fn schema_to_defs(schema: &Schema) -> Vec<ColumnDef> {
+    schema
+        .fields()
+        .iter()
+        .map(|f| ColumnDef {
+            name: f.name().clone(),
+            data_type: f.data_type().to_string(),
+            nullable: f.is_nullable(),
+        })
+        .collect()
+}
+
+pub fn schema_from_defs(defs: &[ColumnDef]) -> Result<Schema, String> {
+    let fields = defs
+        .iter()
+        .map(|d| {
+            let t = DataType::from_str(&d.data_type)
+                .map_err(|e| format!("column `{}`: {e}", d.name))?;
+            Ok(Field::new(&d.name, t, d.nullable))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(Schema::new(fields))
 }
 
 impl Manifest {
@@ -69,5 +108,33 @@ impl Manifest {
     /// True when every file was written under this contract hash, so stored flags can replace live rules.
     pub fn flags_current(&self, contract_hash: &str) -> bool {
         !self.files.is_empty() && self.files.iter().all(|f| f.contract_hash == contract_hash)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schemas_round_trip() {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new(
+                "b",
+                DataType::List(Field::new_list_field(DataType::Utf8, true).into()),
+                true,
+            ),
+            Field::new("c", DataType::Decimal128(18, 2), true),
+            Field::new(
+                "d",
+                DataType::Timestamp(
+                    datafusion::arrow::datatypes::TimeUnit::Microsecond,
+                    Some("UTC".into()),
+                ),
+                true,
+            ),
+            Field::new("e", DataType::Date32, false),
+        ]);
+        assert_eq!(schema_from_defs(&schema_to_defs(&schema)).unwrap(), schema);
     }
 }

@@ -290,3 +290,26 @@ async fn a_drifted_translation_is_caught() {
     assert!(!diff.passed());
     assert!(diff.mismatches.iter().all(|m| m.rule == "s_len"));
 }
+
+#[tokio::test]
+async fn bundles_round_trip_and_verify() {
+    use parcel_engine::bundle::Bundle;
+    let doc = ContractDoc::parse(PROFILE).unwrap();
+    let c = compile(&doc, &schema(), &Registry::builtin()).unwrap();
+    let json = Bundle::new(&doc, &schema(), &c).unwrap().to_json().unwrap();
+    let back = Bundle::from_json(&json).unwrap();
+    let verified = back.verify().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        verified.contract.compilation_hash,
+        c.contract.compilation_hash
+    );
+
+    // Tampering with the document or an expression is detected.
+    let mut bad = Bundle::from_json(&json).unwrap();
+    bad.document.version += 1;
+    assert!(bad.verify().is_err());
+    let mut bad = Bundle::from_json(&json).unwrap();
+    let other = bad.exprs["flag/s_len"].clone();
+    bad.exprs.insert("flag/s_prefix".into(), other);
+    assert!(bad.verify().unwrap_err().contains("flag/s_prefix"));
+}
