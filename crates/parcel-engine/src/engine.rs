@@ -118,9 +118,16 @@ pub struct Engine {
     registry: Registry,
     contracts: BTreeMap<String, Registered>,
     budgets: BudgetStore,
+    use_stored: bool,
 }
 
 impl Engine {
+    /// Whether views may read flags and derived columns from storage (default) or must
+    /// evaluate every rule live. Both give the same rows; stored is faster.
+    pub fn set_use_stored(&mut self, on: bool) {
+        self.use_stored = on;
+    }
+
     /// An engine whose relative bindings resolve under `base`.
     pub fn new(base: impl Into<PathBuf>) -> Engine {
         Engine {
@@ -128,6 +135,7 @@ impl Engine {
             registry: Registry::builtin(),
             contracts: BTreeMap::new(),
             budgets: BudgetStore::default(),
+            use_stored: true,
         }
     }
 
@@ -251,6 +259,9 @@ impl Engine {
             .collect();
         for flag in &r.compilation.write.flags {
             select.push(flag.expr.clone().alias(&flag.column));
+        }
+        for d in &r.compilation.write.derived {
+            select.push(d.expr.clone().alias(&d.column));
         }
         let plan = LogicalPlanBuilder::scan("incoming", provider_as_source(Arc::new(mem)), None)?
             .project(select)?
@@ -518,7 +529,7 @@ impl Engine {
                 decisions,
                 annotations,
                 shapes,
-                flags_materialised: manifest.flags_current(&cc.contract_hash),
+                flags_materialised: self.use_stored && manifest.flags_current(&cc.contract_hash),
                 active_shapes,
             },
             manifest,
@@ -535,7 +546,13 @@ impl Engine {
         let r = self.get(name)?;
         let cc = &r.compilation.contract;
         let provider = binding::provider(cc, &self.root(cc))?;
-        let mut filters: Vec<Expr> = cc.admits.iter().map(|(_, e)| e.clone()).collect();
+        let stored = resolution.flags_materialised;
+        let admits = if stored {
+            &cc.admits_stored
+        } else {
+            &cc.admits
+        };
+        let mut filters: Vec<Expr> = admits.iter().map(|(_, e)| e.clone()).collect();
         for Flag {
             column,
             expr,
@@ -544,7 +561,7 @@ impl Engine {
         } in &cc.flags
         {
             if *on_fail == AssertOnFail::Drop {
-                filters.push(if resolution.flags_materialised {
+                filters.push(if stored {
                     col_ref(column)
                 } else {
                     expr.clone()
@@ -564,8 +581,12 @@ impl Engine {
         if let Some(f) = filters.into_iter().reduce(Expr::and) {
             b = b.filter(f)?;
         }
-        let projection: Vec<Expr> = cc
-            .projection
+        let projection_src = if stored {
+            &cc.projection_stored
+        } else {
+            &cc.projection
+        };
+        let projection: Vec<Expr> = projection_src
             .iter()
             .map(|(n, e)| e.clone().alias(n))
             .collect();

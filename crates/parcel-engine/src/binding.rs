@@ -46,6 +46,9 @@ pub fn file_schema(contract: &CompiledContract) -> SchemaRef {
     for flag in &contract.flags {
         fields.push(Field::new(&flag.column, DataType::Boolean, true));
     }
+    for d in &contract.derived {
+        fields.push(Field::new(&d.column, d.ty.to_arrow(), true));
+    }
     Arc::new(Schema::new(fields))
 }
 

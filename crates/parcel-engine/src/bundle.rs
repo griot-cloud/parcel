@@ -67,6 +67,18 @@ impl Bundle {
         for (col, e) in &cc.projection {
             exprs.insert(format!("project/{col}"), hex::encode(e.to_bytes()?));
         }
+        for (id, e) in &cc.admits_stored {
+            exprs.insert(format!("admit_stored/{id}"), hex::encode(e.to_bytes()?));
+        }
+        for (col, e) in &cc.projection_stored {
+            exprs.insert(format!("project_stored/{col}"), hex::encode(e.to_bytes()?));
+        }
+        for d in &cc.derived {
+            exprs.insert(
+                format!("derived/{}", d.column),
+                hex::encode(d.expr.to_bytes()?),
+            );
+        }
         let plan = portable_plan(&c.validation.plan, schema)?;
         let plan_bytes = logical_plan_to_bytes_with_extension_codec(&plan, &BindingCodec)?;
         Ok(Bundle {
@@ -143,6 +155,27 @@ impl Bundle {
         }
         for (col, e) in &c.contract.projection {
             check(format!("project/{col}"), e)?;
+        }
+        for (id, e) in &c.contract.admits_stored {
+            check(format!("admit_stored/{id}"), e)?;
+        }
+        for (col, e) in &c.contract.projection_stored {
+            check(format!("project_stored/{col}"), e)?;
+        }
+        for d in &c.contract.derived {
+            check(format!("derived/{}", d.column), &d.expr)?;
+        }
+        let expected = c.contract.admits.len()
+            + c.contract.flags.len()
+            + c.contract.projection.len()
+            + c.contract.admits_stored.len()
+            + c.contract.projection_stored.len()
+            + c.contract.derived.len();
+        if self.exprs.len() != expected {
+            return Err(format!(
+                "the bundle carries {} expressions; the contract compiles to {expected}",
+                self.exprs.len()
+            ));
         }
         let plan = self.validation_plan(&ctx.task_ctx())?;
         let want = portable_plan(&c.validation.plan, &schema).map_err(|e| e.to_string())?;

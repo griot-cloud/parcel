@@ -1,6 +1,6 @@
 //! The Assemble pass: one translation, three artifacts (design section 9).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use datafusion_common::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -82,6 +82,17 @@ pub enum RowRuleKind {
     Transform { column: String },
 }
 
+/// A row-only subtree of an admit or transform, computed once at write and stored (design 8, "Split").
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Derived {
+    /// `_d_<hash>` of the subtree's canonical CEL.
+    pub column: String,
+    pub cel: String,
+    #[serde(serialize_with = "ser_expr")]
+    pub expr: Expr,
+    pub ty: Type,
+}
+
 /// How a rule will execute, shown to the author (design 9.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -138,6 +149,14 @@ pub struct CompiledContract {
     pub report: Vec<ReportEntry>,
     /// Every admit, assert and transform in reference CEL, for the differential test.
     pub row_rules: Vec<RowRule>,
+    /// Row-only subtrees stored at write time.
+    pub derived: Vec<Derived>,
+    /// The admits and projection with derived subtrees read from storage. Equal to the live
+    /// versions when nothing is derived; valid only over files written under this contract.
+    #[serde(serialize_with = "ser_named_exprs")]
+    pub admits_stored: Vec<(String, Expr)>,
+    #[serde(serialize_with = "ser_named_exprs")]
+    pub projection_stored: Vec<(String, Expr)>,
 }
 
 /// A statistic the validation plan computes: one `dataset` field.
@@ -179,6 +198,7 @@ pub struct Layout {
 #[derive(Clone, Debug, Serialize)]
 pub struct WritePlan {
     pub flags: Vec<Flag>,
+    pub derived: Vec<Derived>,
     pub layout: Layout,
     /// Keys the manifest carries besides the statistics.
     pub manifest_fields: Vec<&'static str>,
@@ -216,6 +236,46 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
     let mut report = Vec::new();
     let mut row_rules = Vec::new();
 
+    // The split pass: row-only subtrees of admits and transforms that are worth storing.
+    let mut derived: Vec<Derived> = Vec::new();
+    let mut derived_map: BTreeMap<String, String> = BTreeMap::new();
+    for rule in &c.rules {
+        if !matches!(
+            rule,
+            CheckedRule::Admit { .. } | CheckedRule::Transform { .. }
+        ) {
+            continue;
+        }
+        let mut found = Vec::new();
+        for x in rule.exprs() {
+            split_candidates(&x.expr, &mut found);
+        }
+        for sub in found {
+            let cel = print(sub, Style::Canonical);
+            if derived_map.contains_key(&cel) {
+                continue;
+            }
+            let column = format!("_d_{}", &hash::sha256_hex(cel.as_bytes())[..12]);
+            let mut scratch = Params::default();
+            let mut t = Translator {
+                schema,
+                params: &mut scratch,
+                dataset_columns: false,
+                derived: None,
+            };
+            let expr = t.expr(sub).map_err(|e| (Some(rule.id().to_owned()), e))?;
+            derived_map.insert(cel.clone(), column.clone());
+            derived.push(Derived {
+                column,
+                cel,
+                expr,
+                ty: sub.ty.clone(),
+            });
+        }
+    }
+    let mut admits_stored = Vec::new();
+    let mut transforms_stored = Vec::new();
+
     for rule in &c.rules {
         let row_kind = match rule {
             CheckedRule::Admit { .. } => Some(RowRuleKind::Admit),
@@ -250,6 +310,7 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
             schema,
             params: &mut params,
             dataset_columns: false,
+            derived: None,
         };
         let (op, tier, reason) = match rule {
             CheckedRule::Decide { expr, .. } => {
@@ -265,6 +326,13 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
             }
             CheckedRule::Admit { expr, .. } => {
                 admits.push((id.clone(), t.predicate(&expr.expr).map_err(at)?));
+                let mut ts = Translator {
+                    schema,
+                    params: t.params,
+                    dataset_columns: false,
+                    derived: Some(&derived_map),
+                };
+                admits_stored.push((id.clone(), ts.predicate(&expr.expr).map_err(at)?));
                 let cols = expr
                     .expr
                     .row_columns()
@@ -320,6 +388,13 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
                 column: col, expr, ..
             } => {
                 transforms.push((col.clone(), t.transform(&expr.expr).map_err(at)?));
+                let mut ts = Translator {
+                    schema,
+                    params: t.params,
+                    dataset_columns: false,
+                    derived: Some(&derived_map),
+                };
+                transforms_stored.push((col.clone(), ts.transform(&expr.expr).map_err(at)?));
                 (
                     "transform",
                     Tier::Projection,
@@ -354,6 +429,24 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
                 )
             }
         };
+        // Name the stored subtrees this rule reads instead of evaluating.
+        let mut reason = reason;
+        if matches!(
+            rule,
+            CheckedRule::Admit { .. } | CheckedRule::Transform { .. }
+        ) {
+            let mut found = Vec::new();
+            for x in rule.exprs() {
+                split_candidates(&x.expr, &mut found);
+            }
+            for sub in found {
+                let cel = print(sub, Style::Canonical);
+                reason.push_str(&format!(
+                    "; `{cel}` is computed at write and read from `{}`",
+                    derived_map[&cel]
+                ));
+            }
+        }
         report.push(ReportEntry {
             rule: id,
             op,
@@ -365,21 +458,28 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
 
     // The view's projection: every exposed column, raw (cast to its declared type) or transformed.
     let mut projection = Vec::new();
+    let mut projection_stored = Vec::new();
     for e in &c.exposed {
-        let expr = match transforms.iter().find(|(col, _)| *col == e.name) {
-            Some((_, t)) => t.clone(),
-            None => {
-                let raw = schema
-                    .field_with_name(&e.name)
-                    .map_err(|x| (None, x.to_string()))?;
-                if raw.data_type() == &e.data_type {
-                    column(&e.name)
-                } else {
-                    cast(column(&e.name), e.data_type.clone())
-                }
-            }
+        let raw = || -> AResult<Expr> {
+            let field = schema
+                .field_with_name(&e.name)
+                .map_err(|x| (None, x.to_string()))?;
+            Ok(if field.data_type() == &e.data_type {
+                column(&e.name)
+            } else {
+                cast(column(&e.name), e.data_type.clone())
+            })
         };
-        projection.push((e.name.clone(), expr));
+        let live = match transforms.iter().find(|(col, _)| *col == e.name) {
+            Some((_, t)) => t.clone(),
+            None => raw()?,
+        };
+        let stored = match transforms_stored.iter().find(|(col, _)| *col == e.name) {
+            Some((_, t)) => t.clone(),
+            None => live.clone(),
+        };
+        projection.push((e.name.clone(), live));
+        projection_stored.push((e.name.clone(), stored));
     }
     let exposed_schema = Arc::new(Schema::new(
         c.exposed
@@ -400,6 +500,7 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
             bloom: bloom_columns(c),
         },
         flags: flags.clone(),
+        derived: derived.clone(),
         manifest_fields: vec![
             "contract_hash",
             "compilation_hash",
@@ -430,6 +531,9 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
             functions: c.functions.clone(),
             report,
             row_rules,
+            derived,
+            admits_stored,
+            projection_stored,
         },
         validation,
         write,
@@ -639,6 +743,7 @@ fn validation_plan(
         schema,
         params: &mut params,
         dataset_columns: true,
+        derived: None,
     };
     let mut verdict: Vec<Expr> = with_stats
         .schema()
@@ -714,6 +819,36 @@ fn validation_plan(
 /// embeds parcel expressions must pass through this before execution.
 pub fn resolve(plan: LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
     Ok(plan.resolve_lambda_variables()?.data)
+}
+
+/// Maximal row-only subtrees worth storing: they call a function, run a macro or match a regex.
+/// Bare columns, literals and plain arithmetic are cheaper to recompute than to store.
+fn split_candidates<'e>(e: &'e TExpr, out: &mut Vec<&'e TExpr>) {
+    use crate::ir::Builtin;
+    if e.ns == crate::ir::NsSet::ROW {
+        let local = !e.free_locals().is_empty();
+        let mut worth = false;
+        e.walk(&mut |n| {
+            if matches!(
+                n.kind,
+                ExprKind::Call(..)
+                    | ExprKind::Macro { .. }
+                    | ExprKind::Builtin(Builtin::Matches, _)
+            ) {
+                worth = true;
+            }
+        });
+        if worth && !local {
+            out.push(e);
+            return;
+        }
+        if !local {
+            return;
+        }
+    }
+    for c in e.children() {
+        split_candidates(c, out);
+    }
 }
 
 fn dataset_fields(e: &TExpr) -> Vec<DatasetField> {

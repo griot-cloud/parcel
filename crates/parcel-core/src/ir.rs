@@ -297,6 +297,40 @@ impl TExpr {
         }
     }
 
+    /// Comprehension variables used but not bound inside this subtree.
+    pub fn free_locals(&self) -> BTreeSet<String> {
+        match &self.kind {
+            ExprKind::Local(v) => BTreeSet::from([v.clone()]),
+            ExprKind::Macro {
+                var, range, body, ..
+            } => {
+                let mut out = body.free_locals();
+                out.remove(var);
+                out.extend(range.free_locals());
+                out
+            }
+            _ => self
+                .children()
+                .into_iter()
+                .flat_map(|c| c.free_locals())
+                .collect(),
+        }
+    }
+
+    /// Direct children, in order.
+    pub fn children(&self) -> Vec<&TExpr> {
+        match &self.kind {
+            ExprKind::Lit(_) | ExprKind::Var(_) | ExprKind::Local(_) | ExprKind::Has(_) => vec![],
+            ExprKind::List(xs) | ExprKind::Builtin(_, xs) | ExprKind::Call(_, xs) => {
+                xs.iter().collect()
+            }
+            ExprKind::Not(x) | ExprKind::Neg(x) => vec![x],
+            ExprKind::Binary(_, a, b) => vec![a, b],
+            ExprKind::Cond(a, b, c) => vec![a, b, c],
+            ExprKind::Macro { range, body, .. } => vec![range, body],
+        }
+    }
+
     /// Visit this node and every descendant, parents first.
     pub fn walk(&self, f: &mut impl FnMut(&TExpr)) {
         f(self);

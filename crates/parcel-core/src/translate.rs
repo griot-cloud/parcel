@@ -77,6 +77,8 @@ pub struct Translator<'a> {
     pub params: &'a mut Params,
     /// When set, `dataset.*` fields read the statistics columns of the validation aggregate.
     pub dataset_columns: bool,
+    /// Row-only subtrees materialised at write time: canonical CEL → derived column (the split pass).
+    pub derived: Option<&'a std::collections::BTreeMap<String, String>>,
 }
 
 pub type TResult = Result<Expr, String>;
@@ -118,8 +120,14 @@ impl Translator<'_> {
     }
 
     pub fn expr(&mut self, e: &TExpr) -> TResult {
-        if e.ns == NsSet::CTX && !has_local(e) {
+        if e.ns == NsSet::CTX && e.free_locals().is_empty() {
             return Ok(self.params.intern(e));
+        }
+        if let Some(derived) = self.derived
+            && e.ns == NsSet::ROW
+            && let Some(col) = derived.get(&print(e, Style::Canonical))
+        {
+            return Ok(column(col));
         }
         Ok(match &e.kind {
             ExprKind::Lit(l) => lit(lit_value(l)),
@@ -356,12 +364,6 @@ impl datafusion_expr::ScalarUDFImpl for BytesLen {
 
 pub fn column(name: &str) -> Expr {
     Expr::Column(Column::new_unqualified(name))
-}
-
-fn has_local(e: &TExpr) -> bool {
-    let mut found = false;
-    e.walk(&mut |n| found |= matches!(n.kind, ExprKind::Local(_)));
-    found
 }
 
 pub fn lit_value(l: &Lit) -> ScalarValue {
