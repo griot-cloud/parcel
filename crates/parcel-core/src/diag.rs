@@ -36,6 +36,8 @@ pub enum Code {
     TransformTarget,
     DuplicateTransform,
     UnknownShapeOperator,
+    /// A child contract that would widen its parent, or an inheritance chain that cannot resolve.
+    Inheritance,
     /// Checked, but the translator has no DataFusion equivalent.
     Untranslatable,
     ShapeParams,

@@ -26,7 +26,7 @@ use datafusion_proto::bytes::{
 };
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use parcel_core::compile::{BINDING_TABLE, Compilation, PARCEL_VERSION};
-use parcel_core::{ContractDoc, Registry, compile};
+use parcel_core::{ContractDoc, Registry, compile_with};
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::{ColumnDef, schema_from_defs, schema_to_defs};
@@ -42,6 +42,9 @@ pub struct Bundle {
     pub contract_hash: String,
     pub compilation_hash: String,
     pub document: ContractDoc,
+    /// The documents it inherits from, parent first; needed to recompile a child.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ancestors: Vec<ContractDoc>,
     pub row_schema: Vec<ColumnDef>,
     /// The three artifacts, readable: report, parameters, rules, statistics, layout.
     pub artifacts: serde_json::Value,
@@ -52,7 +55,12 @@ pub struct Bundle {
 }
 
 impl Bundle {
-    pub fn new(doc: &ContractDoc, schema: &Schema, c: &Compilation) -> DFResult<Bundle> {
+    pub fn new(
+        doc: &ContractDoc,
+        ancestors: &[ContractDoc],
+        schema: &Schema,
+        c: &Compilation,
+    ) -> DFResult<Bundle> {
         let cc = &c.contract;
         let mut exprs = BTreeMap::new();
         for (id, e) in &cc.admits {
@@ -89,6 +97,7 @@ impl Bundle {
             contract_hash: cc.contract_hash.clone(),
             compilation_hash: cc.compilation_hash.clone(),
             document: doc.clone(),
+            ancestors: ancestors.to_vec(),
             row_schema: schema_to_defs(schema),
             artifacts: serde_json::to_value(c)
                 .map_err(|e| DataFusionError::External(Box::new(e)))?,
@@ -115,7 +124,10 @@ impl Bundle {
             return Err(format!("unknown bundle format `{}`", self.format));
         }
         let schema = self.schema()?;
-        let c = compile(&self.document, &schema, &Registry::builtin()).map_err(|d| {
+        let c = compile_with(&self.document, &schema, &Registry::builtin(), &|n| {
+            self.ancestors.iter().find(|a| a.contract == n).cloned()
+        })
+        .map_err(|d| {
             d.iter()
                 .map(|d| d.to_string())
                 .collect::<Vec<_>>()

@@ -18,7 +18,7 @@ use datafusion::logical_expr::{Expr, LogicalPlan, LogicalPlanBuilder, SortExpr};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use parcel_core::compile::{BINDING_TABLE, Flag};
 use parcel_core::document::{AssertOnFail, GuaranteeOnFail};
-use parcel_core::{Compilation, CompiledContract, ContractDoc, Registry, ShapeOp, compile};
+use parcel_core::{Compilation, CompiledContract, ContractDoc, Registry, ShapeOp};
 use parcel_runtime::Caller;
 use parcel_runtime::reference::{self, Scope};
 use serde::Serialize;
@@ -32,7 +32,10 @@ use crate::shape;
 /// A registered contract: its document and the three compiled artifacts.
 #[derive(Clone, Debug)]
 pub struct Registered {
+    /// The document as written.
     pub doc: ContractDoc,
+    /// Its ancestors as written, parent first, when it inherits.
+    pub ancestors: Vec<ContractDoc>,
     pub compilation: Arc<Compilation>,
 }
 
@@ -119,6 +122,8 @@ pub struct Engine {
     contracts: BTreeMap<String, Registered>,
     budgets: BudgetStore,
     use_stored: bool,
+    /// Every contract document known, registered or not: where parents are looked up.
+    documents: BTreeMap<String, ContractDoc>,
 }
 
 impl Engine {
@@ -136,6 +141,7 @@ impl Engine {
             contracts: BTreeMap::new(),
             budgets: BudgetStore::default(),
             use_stored: true,
+            documents: BTreeMap::new(),
         }
     }
 
@@ -154,11 +160,23 @@ impl Engine {
                 .is_some_and(|e| e == "yaml" || e == "yml" || e == "json")
         });
         paths.sort();
+        let mut sources = Vec::new();
         for path in paths {
             let source = std::fs::read_to_string(&path)?;
             let doc = ContractDoc::parse(&source).map_err(|d| EngineError::Compile(vec![d]))?;
+            engine.add_document(doc.clone());
+            sources.push((path, source, doc));
+        }
+        for (path, source, doc) in sources {
+            let resolved =
+                parcel_core::inherit::resolve(&doc, &|n| engine.documents.get(n).cloned())
+                    .map_err(EngineError::Compile)?;
+            let Some(binding) = &resolved.doc.binding else {
+                pending.push((path, source));
+                continue;
+            };
             let root = {
-                let raw = doc.binding.parquet.trim_start_matches("file://");
+                let raw = binding.parquet.trim_start_matches("file://");
                 let p = std::path::Path::new(raw);
                 if p.is_absolute() {
                     p.to_path_buf()
@@ -175,6 +193,11 @@ impl Engine {
             }
         }
         Ok((engine, pending))
+    }
+
+    /// Make a contract document known without compiling it, so others can inherit from it.
+    pub fn add_document(&mut self, doc: ContractDoc) {
+        self.documents.insert(doc.contract.clone(), doc);
     }
 
     pub fn base(&self) -> &std::path::Path {
@@ -202,13 +225,29 @@ impl Engine {
         schema: &datafusion::arrow::datatypes::Schema,
     ) -> Result<&Registered> {
         let doc = ContractDoc::parse(source).map_err(|d| EngineError::Compile(vec![d]))?;
-        let compilation = compile(&doc, schema, &self.registry).map_err(EngineError::Compile)?;
+        self.add_document(doc.clone());
+        let docs = &self.documents;
+        let compilation =
+            parcel_core::compile_with(&doc, schema, &self.registry, &|n| docs.get(n).cloned())
+                .map_err(EngineError::Compile)?;
+        let mut ancestors = Vec::new();
+        let mut next = doc.inherits.clone();
+        while let Some(p) = next {
+            let parent = self
+                .documents
+                .get(&p)
+                .cloned()
+                .ok_or_else(|| EngineError::UnknownContract(p.clone()))?;
+            next = parent.inherits.clone();
+            ancestors.push(parent);
+        }
         parcel_runtime::verify_pins(&compilation.contract.functions)?;
         let name = doc.contract.clone();
         self.contracts.insert(
             name.clone(),
             Registered {
                 doc,
+                ancestors,
                 compilation: Arc::new(compilation),
             },
         );

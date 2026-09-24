@@ -136,13 +136,51 @@ pub fn check_contract(
     schema: &Schema,
     registry: &Registry,
 ) -> Result<CheckedContract, Vec<Diagnostic>> {
+    check_layers(doc, schema, registry, &[])
+}
+
+/// One level of an inheritance chain, root first (see [`crate::inherit`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Layer {
+    pub contract: String,
+    /// The rules this contract added.
+    pub rules: BTreeSet<String>,
+    /// Columns the layer above exposes: all a child's transforms may read. Empty for the root.
+    pub visible: BTreeSet<String>,
+    /// What this layer exposes, so its transforms can be checked even where a child hides them.
+    pub expose: Vec<crate::document::ExposeColumn>,
+}
+
+/// Check a document flattened from an inheritance chain. Rules of each layer see the layers
+/// above through their transforms, and a transform may only read what the layer above exposes.
+pub fn check_layers(
+    doc: &ContractDoc,
+    schema: &Schema,
+    registry: &Registry,
+    layers: &[Layer],
+) -> Result<CheckedContract, Vec<Diagnostic>> {
     let mut d: Vec<Diagnostic> = Vec::new();
+    let layer_of = |id: &str| {
+        layers
+            .iter()
+            .position(|l| l.rules.contains(id))
+            .unwrap_or(0)
+    };
+    if doc.inherits.is_some() {
+        return Err(vec![Diagnostic::new(
+            Code::Inheritance,
+            None,
+            format!(
+                "`{}` inherits; resolve the chain first (parcel_core::inherit::resolve)",
+                doc.contract
+            ),
+        )]);
+    }
     let e = |d: &mut Vec<Diagnostic>, code, rule: Option<&str>, msg: String| {
         d.push(Diagnostic::new(code, rule, msg))
     };
 
     for (field, present) in [
-        ("inherits", doc.inherits.is_some()),
         ("extensions", doc.extensions.is_some()),
         ("enrich", doc.enrich.is_some()),
         ("dataset_other", doc.dataset_other.is_some()),
@@ -163,7 +201,21 @@ pub fn check_contract(
         .map(|f| (f.name().clone(), Type::from_arrow(f.data_type())))
         .collect();
 
-    for p in &doc.binding.partitioned_by {
+    let Some(binding) = &doc.binding else {
+        return Err(vec![Diagnostic::new(
+            Code::Document,
+            None,
+            "the contract has no binding; only a contract that inherits may omit it",
+        )]);
+    };
+    let Some(expose) = &doc.expose else {
+        return Err(vec![Diagnostic::new(
+            Code::Document,
+            None,
+            "the contract has no expose section; only a contract that inherits may omit it",
+        )]);
+    };
+    for p in &binding.partitioned_by {
         if !columns.contains_key(p) {
             e(
                 &mut d,
@@ -199,8 +251,10 @@ pub fn check_contract(
     // Transforms, indexed by column, so expose can tell a raw column from a transformed one.
     let mut transforms: BTreeMap<&str, &TransformRule> = BTreeMap::new();
     for r in &doc.rules {
+        // Across inheritance layers a column may be transformed again: the transforms compose.
         if let Rule::Transform(t) = r
-            && transforms.insert(t.column.as_str(), t).is_some()
+            && let Some(prev) = transforms.insert(t.column.as_str(), t)
+            && layer_of(&prev.id) == layer_of(&t.id)
         {
             e(
                 &mut d,
@@ -214,7 +268,7 @@ pub fn check_contract(
     // Expose: the caller's schema.
     let mut exposed = Vec::new();
     let mut exposed_names = BTreeSet::new();
-    for col in &doc.expose {
+    for col in expose {
         if !exposed_names.insert(col.name.as_str()) {
             e(
                 &mut d,
@@ -280,13 +334,91 @@ pub fn check_contract(
         registry,
     };
 
-    let mut rules = Vec::new();
-    for r in &doc.rules {
-        match classify_rule(r, &env, &exposed) {
-            Ok(c) => rules.push(c),
-            Err(mut errs) => d.append(&mut errs),
+    // Transforms of columns a child hides are still checked against the type the layer exposed.
+    let mut all_exposed = exposed.clone();
+    for l in layers {
+        for c in &l.expose {
+            if !all_exposed.iter().any(|e| e.name == c.name)
+                && let Ok(t) = parse_type_name(&c.type_name)
+            {
+                all_exposed.push(ExposedColumn {
+                    name: c.name.clone(),
+                    type_name: c.type_name.clone(),
+                    data_type: t,
+                });
+            }
         }
     }
+    let mut rules: Vec<CheckedRule> = Vec::new();
+    // Transforms composed so far, and the snapshot the current layer sees.
+    let mut composed: BTreeMap<String, TExpr> = BTreeMap::new();
+    let mut seen_by_layer: BTreeMap<String, TExpr> = BTreeMap::new();
+    let mut current = 0;
+    for r in &doc.rules {
+        let layer = layer_of(r.id());
+        if layer != current {
+            current = layer;
+            seen_by_layer = composed.clone();
+        }
+        let mut checked = match classify_rule(r, &env, &all_exposed) {
+            Ok(c) => c,
+            Err(mut errs) => {
+                d.append(&mut errs);
+                continue;
+            }
+        };
+        if layer > 0 {
+            match &mut checked {
+                CheckedRule::Transform { id, expr, .. } => {
+                    let hidden: Vec<String> = expr
+                        .expr
+                        .row_columns()
+                        .into_iter()
+                        .filter(|c| !layers[layer].visible.contains(c))
+                        .collect();
+                    if !hidden.is_empty() {
+                        d.push(Diagnostic::new(
+                            Code::Inheritance,
+                            Some(id),
+                            format!(
+                                "a child transform may read only what `{}` exposes; `{}` is hidden by the parent",
+                                layers[layer - 1].contract,
+                                hidden.join("`, `")
+                            ),
+                        ));
+                        continue;
+                    }
+                    expr.expr = expr.expr.substitute_rows(&seen_by_layer);
+                }
+                CheckedRule::Admit { expr, .. } => {
+                    expr.expr = expr.expr.substitute_rows(&seen_by_layer)
+                }
+                _ => {}
+            }
+        }
+        if let CheckedRule::Transform { column, expr, .. } = &checked {
+            composed.insert(column.clone(), expr.expr.clone());
+        }
+        rules.push(checked);
+    }
+    // A composed transform replaces the ones it was composed from.
+    let mut last_transform: BTreeMap<String, usize> = BTreeMap::new();
+    for (i, r) in rules.iter().enumerate() {
+        if let CheckedRule::Transform { column, .. } = r {
+            last_transform.insert(column.clone(), i);
+        }
+    }
+    let rules: Vec<CheckedRule> = rules
+        .into_iter()
+        .enumerate()
+        .filter(|(i, r)| match r {
+            CheckedRule::Transform { column, .. } => {
+                last_transform[column] == *i && exposed.iter().any(|e| &e.name == column)
+            }
+            _ => true,
+        })
+        .map(|(_, r)| r)
+        .collect();
 
     if !d.is_empty() {
         return Err(d);
@@ -300,7 +432,7 @@ pub fn check_contract(
         name: doc.contract.clone(),
         version: doc.version,
         contract_hash: contract_hash(doc),
-        binding: doc.binding.clone(),
+        binding: binding.clone(),
         exposed,
         rules,
         functions,

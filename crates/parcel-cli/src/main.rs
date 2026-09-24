@@ -10,7 +10,7 @@ use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::{CsvReadOptions, ParquetReadOptions, SessionContext};
 use parcel_core::compile::{ReportEntry, Tier};
-use parcel_core::{ContractDoc, Registry, compile};
+use parcel_core::{ContractDoc, Registry};
 use parcel_engine::differential::differential;
 use parcel_engine::{Caller, Engine, EngineError, WriteMode};
 
@@ -317,6 +317,10 @@ async fn run(cmd: Command) -> R {
             let (engine, pending) = Engine::open(&ws.root).map_err(|e| e.to_string())?;
             for r in engine.contracts() {
                 let cc = &r.compilation.contract;
+                engine
+                    .ensure_manifest(&cc.name)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 let m = engine.manifest(&cc.name).map_err(|e| e.to_string())?;
                 let state = match m {
                     Some(m) if m.valid => format!(
@@ -339,6 +343,39 @@ async fn run(cmd: Command) -> R {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// Every contract document next to `contract` and under `<root>/contracts`, by name: where parents are found.
+fn sibling_documents(
+    contract: &Path,
+    root: Option<&Path>,
+) -> std::collections::BTreeMap<String, ContractDoc> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut dirs = vec![contract.parent().map(Path::to_path_buf).unwrap_or_default()];
+    if let Some(r) = root {
+        dirs.push(r.join("contracts"));
+    }
+    for dir in dirs {
+        let dir = if dir.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            dir
+        };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension()
+                .is_some_and(|x| x == "yaml" || x == "yml" || x == "json")
+                && let Ok(text) = std::fs::read_to_string(&p)
+                && let Ok(doc) = ContractDoc::parse(&text)
+            {
+                out.entry(doc.contract.clone()).or_insert(doc);
+            }
+        }
+    }
+    out
 }
 
 fn open(root: &Path) -> Result<Engine, String> {
@@ -404,7 +441,10 @@ async fn cmd_compile(
         std::fs::read_to_string(contract).map_err(|e| format!("{}: {e}", contract.display()))?;
     let (schema, _) = read_schema_only(schema_from, types).await?;
     let doc = ContractDoc::parse(&source).map_err(|d| d.to_string())?;
-    let c = match compile(&doc, &schema, &Registry::builtin()) {
+    let docs = sibling_documents(contract, None);
+    let c = match parcel_core::compile_with(&doc, &schema, &Registry::builtin(), &|n| {
+        docs.get(n).cloned()
+    }) {
         Ok(c) => c,
         Err(diags) => {
             for d in diags {
@@ -413,6 +453,12 @@ async fn cmd_compile(
             return Ok(ExitCode::from(1));
         }
     };
+    let mut ancestors = Vec::new();
+    let mut next = doc.inherits.clone();
+    while let Some(p) = next.and_then(|n| docs.get(&n).cloned()) {
+        next = p.inherits.clone();
+        ancestors.push(p);
+    }
     if json {
         println!(
             "{}",
@@ -427,8 +473,8 @@ async fn cmd_compile(
         );
     }
     if let Some(out) = out {
-        let bundle =
-            parcel_engine::bundle::Bundle::new(&doc, &schema, &c).map_err(|e| e.to_string())?;
+        let bundle = parcel_engine::bundle::Bundle::new(&doc, &ancestors, &schema, &c)
+            .map_err(|e| e.to_string())?;
         std::fs::write(out, bundle.to_json().map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
         eprintln!("wrote {}", out.display());
@@ -473,15 +519,26 @@ async fn cmd_check(
     let (schema, batches) = read_data(data, types).await?;
     let schema = row_schema(&schema);
     let doc = ContractDoc::parse(&source).map_err(|d| d.to_string())?;
-    let c = match compile(&doc, &schema, &Registry::builtin()) {
-        Ok(c) => c,
-        Err(diags) => {
-            for d in diags {
-                eprintln!("{d}");
-            }
-            return Ok(ExitCode::from(1));
+    // Every document in the contract's directory, with all bindings pointed at the sample.
+    let mut docs = sibling_documents(contract, None);
+    docs.insert(doc.contract.clone(), doc.clone());
+    for d in docs.values_mut() {
+        if let Some(b) = d.binding.as_mut() {
+            b.parquet = "data/".into();
         }
-    };
+    }
+    let c =
+        match parcel_core::compile_with(&docs[&doc.contract], &schema, &Registry::builtin(), &|n| {
+            docs.get(n).cloned()
+        }) {
+            Ok(c) => c,
+            Err(diags) => {
+                for d in diags {
+                    eprintln!("{d}");
+                }
+                return Ok(ExitCode::from(1));
+            }
+        };
     print_report(
         &c.contract.name,
         c.contract.version,
@@ -493,9 +550,10 @@ async fn cmd_check(
     let scratch = std::env::temp_dir().join(format!("parcel-check-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     let mut engine = Engine::new(&scratch);
-    let mut local = doc.clone();
-    local.binding.parquet = "data/".into();
-    let local_src = yaml_serde::to_string(&local).map_err(|e| e.to_string())?;
+    for d in docs.values() {
+        engine.add_document(d.clone());
+    }
+    let local_src = yaml_serde::to_string(&docs[&doc.contract]).map_err(|e| e.to_string())?;
     engine
         .register_contract(&local_src, &schema)
         .map_err(|e| e.to_string())?;
@@ -631,6 +689,9 @@ async fn cmd_write(
         std::fs::read_to_string(contract).map_err(|e| format!("{}: {e}", contract.display()))?;
     let doc = ContractDoc::parse(&source).map_err(|d| d.to_string())?;
     let (mut engine, _) = Engine::open(root).map_err(|e| e.to_string())?;
+    for (_, d) in sibling_documents(contract, Some(root)) {
+        engine.add_document(d);
+    }
     let (schema, batches) = read_data(input, types).await?;
     let schema = row_schema(&schema);
     // (Re)register from the file given, so an edited contract takes effect on this write.

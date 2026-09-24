@@ -296,7 +296,10 @@ async fn bundles_round_trip_and_verify() {
     use parcel_engine::bundle::Bundle;
     let doc = ContractDoc::parse(PROFILE).unwrap();
     let c = compile(&doc, &schema(), &Registry::builtin()).unwrap();
-    let json = Bundle::new(&doc, &schema(), &c).unwrap().to_json().unwrap();
+    let json = Bundle::new(&doc, &[], &schema(), &c)
+        .unwrap()
+        .to_json()
+        .unwrap();
     let back = Bundle::from_json(&json).unwrap();
     let verified = back.verify().unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(

@@ -317,6 +317,47 @@ impl TExpr {
         }
     }
 
+    /// Replace `row.<col>` reads with the given expressions (inheritance: a child sees its parent's
+    /// transformed values). `has(row.<col>)` keeps testing the stored column.
+    pub fn substitute_rows(&self, map: &std::collections::BTreeMap<String, TExpr>) -> TExpr {
+        let sub = |x: &TExpr| Box::new(x.substitute_rows(map));
+        let subs = |xs: &[TExpr]| {
+            xs.iter()
+                .map(|x| x.substitute_rows(map))
+                .collect::<Vec<_>>()
+        };
+        let kind = match &self.kind {
+            ExprKind::Var(Var::Row(c)) => {
+                if let Some(e) = map.get(c) {
+                    return e.clone();
+                }
+                self.kind.clone()
+            }
+            ExprKind::Lit(_) | ExprKind::Var(_) | ExprKind::Local(_) | ExprKind::Has(_) => {
+                self.kind.clone()
+            }
+            ExprKind::List(xs) => ExprKind::List(subs(xs)),
+            ExprKind::Builtin(b, xs) => ExprKind::Builtin(*b, subs(xs)),
+            ExprKind::Call(p, xs) => ExprKind::Call(p.clone(), subs(xs)),
+            ExprKind::Not(x) => ExprKind::Not(sub(x)),
+            ExprKind::Neg(x) => ExprKind::Neg(sub(x)),
+            ExprKind::Binary(op, a, b) => ExprKind::Binary(*op, sub(a), sub(b)),
+            ExprKind::Cond(a, b, c) => ExprKind::Cond(sub(a), sub(b), sub(c)),
+            ExprKind::Macro {
+                kind,
+                var,
+                range,
+                body,
+            } => ExprKind::Macro {
+                kind: *kind,
+                var: var.clone(),
+                range: sub(range),
+                body: sub(body),
+            },
+        };
+        TExpr::new(kind, self.ty.clone())
+    }
+
     /// Direct children, in order.
     pub fn children(&self) -> Vec<&TExpr> {
         match &self.kind {

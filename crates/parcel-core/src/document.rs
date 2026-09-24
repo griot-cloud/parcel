@@ -16,8 +16,12 @@ pub struct ContractDoc {
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherits: Option<String>,
-    pub binding: Binding,
-    pub expose: Vec<ExposeColumn>,
+    /// Where the data is. A child contract may omit it and inherit its parent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<Binding>,
+    /// The caller's schema. A child contract may omit it (inherit the parent's) or narrow it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose: Option<Vec<ExposeColumn>>,
     #[serde(default)]
     pub rules: Vec<Rule>,
     /// Declared shapes of each namespace's `other` field (design 3.1).

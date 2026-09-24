@@ -262,7 +262,7 @@ fn document_level_rejections() {
         ))
         .contains(&Code::DuplicateExpose)
     );
-    assert!(run(&format!("{base}inherits: sales/base\nexpose: []")).contains(&Code::Unsupported));
+    assert!(run(&format!("{base}inherits: sales/base\nexpose: []")).contains(&Code::Inheritance));
     assert!(
         run(&format!("{base}expose: []\nrules:\n  - {{id: a, op: admit, expr: 'true'}}\n  - {{id: a, op: admit, expr: 'true'}}"))
             .contains(&Code::DuplicateRuleId)

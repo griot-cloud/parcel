@@ -13,7 +13,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::cel_print::{Style, print};
-use crate::check::{CheckedContract, CheckedRule, ShapeOp, check_contract};
+use crate::check::{CheckedContract, CheckedRule, ShapeOp};
 use crate::diag::{Code, Diagnostic};
 use crate::document::{AssertOnFail, Binding, ContractDoc, GuaranteeOnFail};
 use crate::hash;
@@ -218,7 +218,30 @@ pub fn compile(
     schema: &Schema,
     registry: &Registry,
 ) -> Result<Compilation, Vec<Diagnostic>> {
-    let checked = check_contract(doc, schema, registry)?;
+    let resolved = crate::inherit::Resolved {
+        doc: doc.clone(),
+        layers: Vec::new(),
+    };
+    compile_resolved(&resolved, schema, registry)
+}
+
+/// Compile a contract that may inherit, looking parents up by contract name.
+pub fn compile_with(
+    doc: &ContractDoc,
+    schema: &Schema,
+    registry: &Registry,
+    lookup: &dyn Fn(&str) -> Option<ContractDoc>,
+) -> Result<Compilation, Vec<Diagnostic>> {
+    compile_resolved(&crate::inherit::resolve(doc, lookup)?, schema, registry)
+}
+
+/// Compile a flattened inheritance chain.
+pub fn compile_resolved(
+    resolved: &crate::inherit::Resolved,
+    schema: &Schema,
+    registry: &Registry,
+) -> Result<Compilation, Vec<Diagnostic>> {
+    let checked = crate::check::check_layers(&resolved.doc, schema, registry, &resolved.layers)?;
     assemble(&checked, schema)
         .map_err(|(rule, msg)| vec![Diagnostic::new(Code::Untranslatable, rule.as_deref(), msg)])
 }
