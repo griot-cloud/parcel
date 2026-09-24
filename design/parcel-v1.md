@@ -12,7 +12,7 @@ v0 works end to end. This is the deferred list from `parcel-v0.md`, plus gaps fo
 | 6 ✅ | Validation plan as SQL | `parcel compile --sql <dialect>` through DataFusion's unparser; built-ins that have no SQL form are reported. | The DuckDB/Postgres SQL for the quickstart contract is emitted and parses. |
 | 7 ✅ | WebAssembly user functions (design 7.4) | `parcel-udf` macro and ABI (arrow-udf convention). Registration verifies exports, imports and a smoke batch. `parcel-runtime` loads modules with wasmtime under fuel and memory limits, as a DataFusion UDF and a CEL function. The registry is a store keyed by tenant and hash. | A tenant function compiled to wasm32 is registered, pinned, and used in an assert. The differential test passes. |
 | 8 ✅ | Substrait output of the validation plan | datafusion-substrait. Constructs it cannot express are listed. | A round trip through Substrait keeps the verdict for the quickstart. |
-| 9 | ODCS import | `parcel import odcs`: schema properties to expose, `required` to `has()` asserts, quality rules where they map. | The ODCS v3 example imports and compiles. |
+| 9 ✅ | ODCS import | `parcel import odcs`: schema properties to expose, `required` to `has()` asserts, quality rules where they map. | The ODCS v3 example imports and compiles. |
 | 10 | Decimals in rules | A reference evaluator that handles exact decimals, then checker and translator support. | Decimal comparisons and arithmetic pass the differential test. |
 
 Out of scope for v1: Python bindings (packaging work, not compiler work), federated execution (peQL), and certificate issuance (Griot product).
@@ -30,3 +30,10 @@ Out of scope for v1: Python bindings (packaging work, not compiler work), federa
   - Name uniqueness is per workspace: a tenant cannot register a name another tenant owns.
   - Bundles embed the modules they are pinned to, so a verifier needs nothing else.
 - **8** ships behind the `substrait` feature on `parcel-engine` and `parcel-cli`, because the `substrait` crate needs `protoc` at build time and parcel should not impose that on everyone. A round trip passes: produce Substrait, consume it in a fresh DataFusion session, run it, and get the same verdict.
+- **9** imports the parts of ODCS v3 that have a faithful parcel meaning:
+  - columns, with types taken from `physicalType` where recognisable, otherwise `logicalType`
+  - `required` and `primaryKey`, as deny-level presence asserts
+  - `unique`, as a distinct-count guarantee
+  - quality rules with `engine: parcel`, whose `implementation` carries parcel rules verbatim
+
+  Everything else (library, SQL and text quality rules, servers, SLAs, classification) is reported as a note, never guessed. Tested against a fixture shaped like the standard's own examples; check it against the ODCS version you use.

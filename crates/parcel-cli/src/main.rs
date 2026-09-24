@@ -119,6 +119,11 @@ enum Command {
     },
     /// Print the JSON Schema of contract documents (for editors and CI).
     Schema,
+    /// Import a contract from another standard.
+    Import {
+        #[command(subcommand)]
+        from: ImportCommand,
+    },
     /// Tenants' WebAssembly functions.
     Function {
         #[command(subcommand)]
@@ -153,6 +158,20 @@ impl TypeHints {
             })
             .collect()
     }
+}
+
+#[derive(Subcommand)]
+enum ImportCommand {
+    /// An Open Data Contract Standard (ODCS v3) document.
+    Odcs {
+        file: PathBuf,
+        /// The schema object to import when the document has several.
+        #[arg(long)]
+        object: Option<String>,
+        /// Write the parcel contract here instead of printing it.
+        #[arg(long, short)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -392,6 +411,26 @@ async fn run(cmd: Command) -> R {
                 .map_err(|e| e.to_string())?;
             for f in schema.fields() {
                 println!("{:<24} {}", f.name(), f.data_type());
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Import {
+            from: ImportCommand::Odcs { file, object, out },
+        } => {
+            let text =
+                std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let imported = parcel_core::odcs::import(&text, object.as_deref())?;
+            let yaml = format!(
+                "# Imported from {} (ODCS). Review the binding, then check it against data:\n#   parcel check <this file> --data <sample>\n{}",
+                file.display(),
+                yaml_serde::to_string(&imported.doc).map_err(|e| e.to_string())?
+            );
+            match out {
+                Some(p) => std::fs::write(&p, yaml).map_err(|e| e.to_string())?,
+                None => print!("{yaml}"),
+            }
+            for n in &imported.notes {
+                eprintln!("note: {n}");
             }
             Ok(ExitCode::SUCCESS)
         }

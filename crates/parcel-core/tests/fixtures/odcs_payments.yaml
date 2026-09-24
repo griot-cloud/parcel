@@ -1,0 +1,60 @@
+# An ODCS v3 contract in the shape of the standard's own examples.
+apiVersion: v3.0.2
+kind: DataContract
+id: 53581432-6c55-4ba2-a65f-72344a91553a
+name: seller_payments_v1
+version: 1.1.0
+status: active
+domain: seller
+tenant: ClimateQuantumInc
+description:
+  purpose: Views built on top of the seller tables.
+servers:
+  - server: my-postgres
+    type: postgres
+    host: localhost
+schema:
+  - name: tbl
+    physicalName: tbl_1
+    physicalType: table
+    logicalType: object
+    properties:
+      - name: txn_ref_dt
+        logicalType: date
+        physicalType: date
+        required: false
+      - name: rcvr_id
+        logicalType: string
+        physicalType: varchar(18)
+        primaryKey: true
+        classification: restricted
+      - name: rcvr_cntry_code
+        logicalType: string
+        physicalType: varchar(2)
+        required: true
+        quality:
+          - name: two_letters
+            type: custom
+            engine: parcel
+            implementation:
+              id: cntry_two_letters
+              op: assert
+              expr: "row.rcvr_cntry_code.matches('^[A-Z]{2}$')"
+              on_fail: report
+      - name: amount
+        logicalType: number
+        physicalType: decimal(18,2)
+      - name: tags
+        logicalType: array
+        items: {logicalType: string}
+    quality:
+      - type: library
+        rule: rowCount
+        mustBeGreaterThan: 100
+      - type: sql
+        query: SELECT COUNT(*) FROM tbl WHERE amount < 0
+        mustBe: 0
+slaProperties:
+  - property: latency
+    value: 4
+    unit: d

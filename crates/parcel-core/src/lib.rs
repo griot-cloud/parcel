@@ -33,6 +33,7 @@ pub mod document;
 pub mod hash;
 pub mod inherit;
 pub mod ir;
+pub mod odcs;
 pub mod registry;
 pub mod translate;
 pub mod types;
