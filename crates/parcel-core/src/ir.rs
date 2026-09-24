@@ -14,6 +14,9 @@ use serde::Serialize;
 use crate::registry::FunctionPin;
 use crate::types::Type;
 
+/// The physical struct column that holds `row.other` (design 3.1).
+pub const OTHER_COLUMN: &str = "_other";
+
 /// Which namespaces an expression reads (design section 3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
 pub struct NsSet {
@@ -149,15 +152,26 @@ pub enum DatasetField {
     RowCount,
     WrittenAt,
     ContractHash,
-    Column { column: String, stat: ColumnStat },
-    AssertionPassRate { assertion: String },
+    Column {
+        column: String,
+        stat: ColumnStat,
+    },
+    AssertionPassRate {
+        assertion: String,
+    },
+    /// A declared `dataset.other` field.
+    Other(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Var {
     Row(String),
+    /// A declared `row.other` field: a field of the `_other` struct column.
+    RowOther(String),
     Ctx(CtxField),
+    /// A declared `ctx.other` field, supplied by the embedding application.
+    CtxOther(String),
     Dataset(DatasetField),
 }
 
@@ -240,6 +254,8 @@ pub enum ExprKind {
     Cond(Box<TExpr>, Box<TExpr>, Box<TExpr>),
     /// `has(row.col)`: the column is not null.
     Has(String),
+    /// `has(row.other.field)`: the enriched field is not null.
+    HasOther(String),
     Builtin(Builtin, Vec<TExpr>),
     Call(FunctionPin, Vec<TExpr>),
     Macro {
@@ -262,8 +278,10 @@ pub struct TExpr {
 impl TExpr {
     pub fn new(kind: ExprKind, ty: Type) -> TExpr {
         let ns = match &kind {
-            ExprKind::Var(Var::Row(_)) | ExprKind::Has(_) => NsSet::ROW,
-            ExprKind::Var(Var::Ctx(_)) => NsSet::CTX,
+            ExprKind::Var(Var::Row(_) | Var::RowOther(_))
+            | ExprKind::Has(_)
+            | ExprKind::HasOther(_) => NsSet::ROW,
+            ExprKind::Var(Var::Ctx(_) | Var::CtxOther(_)) => NsSet::CTX,
             ExprKind::Var(Var::Dataset(_)) => NsSet::DATASET,
             _ => NsSet::default(),
         };
@@ -276,7 +294,11 @@ impl TExpr {
 
     pub fn for_each_child(&self, mut f: impl FnMut(&TExpr)) {
         match &self.kind {
-            ExprKind::Lit(_) | ExprKind::Var(_) | ExprKind::Local(_) | ExprKind::Has(_) => {}
+            ExprKind::Lit(_)
+            | ExprKind::Var(_)
+            | ExprKind::Local(_)
+            | ExprKind::Has(_)
+            | ExprKind::HasOther(_) => {}
             ExprKind::List(xs) | ExprKind::Builtin(_, xs) | ExprKind::Call(_, xs) => {
                 xs.iter().for_each(f)
             }
@@ -333,9 +355,18 @@ impl TExpr {
                 }
                 self.kind.clone()
             }
-            ExprKind::Lit(_) | ExprKind::Var(_) | ExprKind::Local(_) | ExprKind::Has(_) => {
+            // Enrichers are inlined under the key `other.<field>`.
+            ExprKind::Var(Var::RowOther(f)) => {
+                if let Some(e) = map.get(&format!("other.{f}")) {
+                    return e.clone();
+                }
                 self.kind.clone()
             }
+            ExprKind::Lit(_)
+            | ExprKind::Var(_)
+            | ExprKind::Local(_)
+            | ExprKind::Has(_)
+            | ExprKind::HasOther(_) => self.kind.clone(),
             ExprKind::List(xs) => ExprKind::List(subs(xs)),
             ExprKind::Builtin(b, xs) => ExprKind::Builtin(*b, subs(xs)),
             ExprKind::Call(p, xs) => ExprKind::Call(p.clone(), subs(xs)),
@@ -361,7 +392,11 @@ impl TExpr {
     /// Direct children, in order.
     pub fn children(&self) -> Vec<&TExpr> {
         match &self.kind {
-            ExprKind::Lit(_) | ExprKind::Var(_) | ExprKind::Local(_) | ExprKind::Has(_) => vec![],
+            ExprKind::Lit(_)
+            | ExprKind::Var(_)
+            | ExprKind::Local(_)
+            | ExprKind::Has(_)
+            | ExprKind::HasOther(_) => vec![],
             ExprKind::List(xs) | ExprKind::Builtin(_, xs) | ExprKind::Call(_, xs) => {
                 xs.iter().collect()
             }
@@ -388,11 +423,31 @@ impl TExpr {
         out
     }
 
+    /// Physical columns read, including `_other` for extension fields.
     pub fn row_columns(&self) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
         self.walk(&mut |e| match &e.kind {
             ExprKind::Var(Var::Row(c)) | ExprKind::Has(c) => {
                 out.insert(c.clone());
+            }
+            ExprKind::Var(Var::RowOther(_)) | ExprKind::HasOther(_) => {
+                out.insert(OTHER_COLUMN.to_owned());
+            }
+            _ => {}
+        });
+        out
+    }
+
+    /// Row values read by value (not through `has()`): `col`, or `other.<field>`.
+    /// A null in any of them decides the rule (design 6, "Nulls").
+    pub fn value_reads(&self) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        self.walk(&mut |e| match &e.kind {
+            ExprKind::Var(Var::Row(c)) => {
+                out.insert(c.clone());
+            }
+            ExprKind::Var(Var::RowOther(f)) => {
+                out.insert(format!("other.{f}"));
             }
             _ => {}
         });

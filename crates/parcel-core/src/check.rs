@@ -11,11 +11,11 @@ use datafusion_common::arrow::datatypes::{DataType, Schema};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::checker::{Env, check_expr};
+use crate::checker::{Env, OtherTypes, check_expr};
 use crate::diag::{Code, Diagnostic};
 use crate::document::*;
 use crate::hash;
-use crate::ir::{CtxField, NsSet, TExpr};
+use crate::ir::{CtxField, ExprKind, NsSet, TExpr, Var};
 use crate::registry::{FunctionPin, Registry};
 use crate::types::{Type, exposable_as, parse_type_name};
 
@@ -122,6 +122,43 @@ pub struct CheckedContract {
     pub rules: Vec<CheckedRule>,
     /// Every registry entry the contract is pinned to.
     pub functions: BTreeSet<FunctionPin>,
+    /// Declared extension fields.
+    pub other: OtherTypes,
+    /// `row.other` producers, in order, each inlined to read only raw columns.
+    pub enrichers: Vec<(String, CheckedExpr)>,
+    /// `dataset.other` producers.
+    pub producers: Vec<Producer>,
+}
+
+/// An aggregate a `dataset.other` producer may use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Aggregate {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+    CountDistinct,
+    Median,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProducerKind {
+    Constant(crate::ir::Lit),
+    Aggregate {
+        func: Aggregate,
+        arg: Option<CheckedExpr>,
+    },
+}
+
+/// Produces one `dataset.other` field at write.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Producer {
+    pub field: String,
+    pub ty: Type,
+    pub kind: ProducerKind,
 }
 
 /// The hash of a contract document's canonical form.
@@ -180,18 +217,27 @@ pub fn check_layers(
         d.push(Diagnostic::new(code, rule, msg))
     };
 
-    for (field, present) in [
-        ("extensions", doc.extensions.is_some()),
-        ("enrich", doc.enrich.is_some()),
-        ("dataset_other", doc.dataset_other.is_some()),
-    ] {
-        if present {
-            e(
-                &mut d,
-                Code::Unsupported,
-                None,
-                format!("`{field}` is not supported in parcel v0"),
-            );
+    // Declared extension fields (design 3.1).
+    let mut other = OtherTypes::default();
+    if let Some(x) = &doc.extensions {
+        for (ns, decl, out) in [
+            ("row", &x.row, &mut other.row),
+            ("ctx", &x.ctx, &mut other.ctx),
+            ("dataset", &x.dataset, &mut other.dataset),
+        ] {
+            for (field, type_name) in decl {
+                match parse_type_name(type_name).and_then(|t| Type::from_arrow(&t)) {
+                    Ok(t) => {
+                        out.insert(field.clone(), t);
+                    }
+                    Err(msg) => e(
+                        &mut d,
+                        Code::BadType,
+                        None,
+                        format!("extensions.{ns}.{field}: {msg}"),
+                    ),
+                }
+            }
         }
     }
 
@@ -332,7 +378,10 @@ pub fn check_layers(
         columns: &columns,
         assertions: &assertions,
         registry,
+        other: &other,
     };
+    let enrichers = check_enrichers(doc, schema, &env, &mut d);
+    let producers = check_producers(doc, &env, &mut d);
 
     // Transforms of columns a child hides are still checked against the type the layer exposed.
     let mut all_exposed = exposed.clone();
@@ -436,7 +485,298 @@ pub fn check_layers(
         exposed,
         rules,
         functions,
+        other,
+        enrichers,
+        producers,
     })
+}
+
+/// Enrichers: each produces one declared `row.other` field from the row, in order.
+fn check_enrichers(
+    doc: &ContractDoc,
+    schema: &Schema,
+    env: &Env,
+    d: &mut Vec<Diagnostic>,
+) -> Vec<(String, CheckedExpr)> {
+    let list = doc.enrich.clone().unwrap_or_default();
+    let data_has_other = schema.field_with_name(crate::ir::OTHER_COLUMN).is_ok();
+    if data_has_other && !list.is_empty() {
+        d.push(Diagnostic::new(
+            Code::Document,
+            None,
+            "the data already carries `_other`; enrichers would replace it",
+        ));
+        return Vec::new();
+    }
+    let mut done: BTreeMap<String, TExpr> = BTreeMap::new();
+    let mut out = Vec::new();
+    for en in &list {
+        let rule = format!("enrich.{}", en.field);
+        let err = |d: &mut Vec<Diagnostic>, code, msg: String| {
+            d.push(Diagnostic::new(code, Some(&rule), msg))
+        };
+        let Some(declared) = env.other.row.get(&en.field) else {
+            err(
+                d,
+                Code::UnknownField,
+                format!("`{}` is not declared under `extensions.row`", en.field),
+            );
+            continue;
+        };
+        if done.contains_key(&format!("other.{}", en.field)) {
+            err(
+                d,
+                Code::DuplicateRuleId,
+                format!("`{}` is enriched twice", en.field),
+            );
+            continue;
+        }
+        let x = match check_expr(env, &rule, &en.expr) {
+            Ok(x) => x,
+            Err(mut errs) => {
+                d.append(&mut errs);
+                continue;
+            }
+        };
+        if x.ns.ctx || x.ns.dataset {
+            err(
+                d,
+                Code::Namespace,
+                "enrichers compute stored values and may read only row".into(),
+            );
+            continue;
+        }
+        let mut early = Vec::new();
+        x.walk(&mut |n| {
+            if let ExprKind::Var(Var::RowOther(f)) | ExprKind::HasOther(f) = &n.kind
+                && !done.contains_key(&format!("other.{f}"))
+            {
+                early.push(f.clone());
+            }
+        });
+        if !early.is_empty() {
+            err(
+                d,
+                Code::UnknownField,
+                format!(
+                    "reads `row.other.{}` before it is enriched; order enrichers so producers come first",
+                    early.join("`, `row.other.")
+                ),
+            );
+            continue;
+        }
+        if &x.ty != declared {
+            err(
+                d,
+                Code::TypeMismatch,
+                format!("gives {}, but `{}` is declared {declared}", x.ty, en.field),
+            );
+            continue;
+        }
+        for pin in x.pins() {
+            if env
+                .registry
+                .get(&pin.name)
+                .is_some_and(|f| !f.deterministic)
+            {
+                err(
+                    d,
+                    Code::NonDeterministic,
+                    format!(
+                        "`{}` is not deterministic; stored values must be reproducible",
+                        pin.name
+                    ),
+                );
+            }
+        }
+        let inlined = x.substitute_rows(&done);
+        done.insert(format!("other.{}", en.field), inlined.clone());
+        out.push((
+            en.field.clone(),
+            CheckedExpr {
+                source: en.expr.clone(),
+                expr: inlined,
+            },
+        ));
+    }
+    if !data_has_other {
+        for field in env.other.row.keys() {
+            if !done.contains_key(&format!("other.{field}")) {
+                d.push(Diagnostic::new(
+                    Code::UnknownField,
+                    None,
+                    format!("`row.other.{field}` is declared but nothing produces it: add an enricher, or supply an `_other` column"),
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// `dataset.other` producers: a constant `value`, or an aggregate `expr` such as `avg(row.amount)`.
+fn check_producers(doc: &ContractDoc, env: &Env, d: &mut Vec<Diagnostic>) -> Vec<Producer> {
+    let mut out = Vec::new();
+    for p in doc.dataset_other.clone().unwrap_or_default() {
+        let rule = format!("dataset_other.{}", p.field);
+        let err = |d: &mut Vec<Diagnostic>, code, msg: String| {
+            d.push(Diagnostic::new(code, Some(&rule), msg))
+        };
+        let Some(declared) = env.other.dataset.get(&p.field).cloned() else {
+            err(
+                d,
+                Code::UnknownField,
+                format!("`{}` is not declared under `extensions.dataset`", p.field),
+            );
+            continue;
+        };
+        let kind = match (&p.value, &p.expr) {
+            (Some(v), None) => {
+                use crate::ir::Lit;
+                let lit = match (&declared, v) {
+                    (Type::String, Value::String(s)) => Lit::String(s.clone()),
+                    (Type::Bool, Value::Bool(b)) => Lit::Bool(*b),
+                    (Type::Int, Value::Number(n)) if n.is_i64() => {
+                        Lit::Int(n.as_i64().unwrap_or_default())
+                    }
+                    (Type::Uint, Value::Number(n)) if n.is_u64() => {
+                        Lit::Uint(n.as_u64().unwrap_or_default())
+                    }
+                    (Type::Double, Value::Number(n)) => Lit::Double(n.as_f64().unwrap_or_default()),
+                    _ => {
+                        err(
+                            d,
+                            Code::TypeMismatch,
+                            format!("value {v} is not a {declared}"),
+                        );
+                        continue;
+                    }
+                };
+                ProducerKind::Constant(lit)
+            }
+            (None, Some(src)) => {
+                let src = src.trim();
+                let (Some(open), true) = (src.find('('), src.ends_with(')')) else {
+                    err(
+                        d,
+                        Code::OutsideProfile,
+                        "expected an aggregate such as `avg(row.amount)`".into(),
+                    );
+                    continue;
+                };
+                let func = match &src[..open] {
+                    "count" => Aggregate::Count,
+                    "sum" => Aggregate::Sum,
+                    "avg" => Aggregate::Avg,
+                    "min" => Aggregate::Min,
+                    "max" => Aggregate::Max,
+                    "count_distinct" => Aggregate::CountDistinct,
+                    "median" => Aggregate::Median,
+                    other => {
+                        err(
+                            d,
+                            Code::UnknownFunction,
+                            format!(
+                                "`{other}` is not an aggregate; use count, sum, avg, min, max, count_distinct or median"
+                            ),
+                        );
+                        continue;
+                    }
+                };
+                let inner = src[open + 1..src.len() - 1].trim();
+                let arg = if func == Aggregate::Count {
+                    if !inner.is_empty() {
+                        err(
+                            d,
+                            Code::NoMatchingOverload,
+                            "count() takes no argument".into(),
+                        );
+                        continue;
+                    }
+                    None
+                } else {
+                    match check_expr(env, &rule, inner) {
+                        Ok(x) if x.ns.ctx || x.ns.dataset => {
+                            err(
+                                d,
+                                Code::Namespace,
+                                "aggregates describe data and may read only row".into(),
+                            );
+                            continue;
+                        }
+                        Ok(x) => Some(CheckedExpr {
+                            source: inner.to_owned(),
+                            expr: x,
+                        }),
+                        Err(mut errs) => {
+                            d.append(&mut errs);
+                            continue;
+                        }
+                    }
+                };
+                let arg_ty = arg.as_ref().map(|a| a.expr.ty.clone());
+                let result = match (func, &arg_ty) {
+                    (Aggregate::Count | Aggregate::CountDistinct, _) => Some(Type::Int),
+                    (Aggregate::Sum, Some(t)) if t.is_numeric() => Some(t.clone()),
+                    (Aggregate::Avg | Aggregate::Median, Some(t)) if t.is_numeric() => {
+                        Some(Type::Double)
+                    }
+                    (Aggregate::Min | Aggregate::Max, Some(t)) if t.is_ordered() => Some(t.clone()),
+                    _ => None,
+                };
+                match result {
+                    Some(t) if t == declared => ProducerKind::Aggregate { func, arg },
+                    Some(t) => {
+                        err(
+                            d,
+                            Code::TypeMismatch,
+                            format!(
+                                "`{src}` gives {t}, but `{}` is declared {declared}",
+                                p.field
+                            ),
+                        );
+                        continue;
+                    }
+                    None => {
+                        err(
+                            d,
+                            Code::NoMatchingOverload,
+                            format!(
+                                "`{src}` does not aggregate {}",
+                                arg_ty.map(|t| t.to_string()).unwrap_or_default()
+                            ),
+                        );
+                        continue;
+                    }
+                }
+            }
+            _ => {
+                err(
+                    d,
+                    Code::Document,
+                    "give exactly one of `value` or `expr`".into(),
+                );
+                continue;
+            }
+        };
+        out.push(Producer {
+            field: p.field.clone(),
+            ty: declared,
+            kind,
+        });
+    }
+    let produced: BTreeSet<&str> = out.iter().map(|p| p.field.as_str()).collect();
+    for field in env.other.dataset.keys() {
+        if !produced.contains(field.as_str()) {
+            d.push(Diagnostic::new(
+                Code::UnknownField,
+                None,
+                format!(
+                    "`dataset.other.{field}` is declared but no `dataset_other` entry produces it"
+                ),
+            ));
+        }
+    }
+    out
 }
 
 fn is_valid_id(id: &str) -> bool {
@@ -593,7 +933,10 @@ fn classify_rule(
                 ));
             }
             // ctx.now is the one caller field a guarantee may read (freshness, design 4.6).
-            if x.expr.ctx_fields().iter().any(|f| *f != CtxField::Now) {
+            let mut ctx_other = false;
+            x.expr
+                .walk(&mut |n| ctx_other |= matches!(n.kind, ExprKind::Var(Var::CtxOther(_))));
+            if ctx_other || x.expr.ctx_fields().iter().any(|f| *f != CtxField::Now) {
                 return Err(err(
                     Code::Namespace,
                     "guarantee rules may read dataset and ctx.now only".into(),

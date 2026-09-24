@@ -146,7 +146,7 @@ fn rejections() {
         ),
         (
             r#"{id: a, op: admit, expr: "row.other.risk == 'x'"}"#,
-            Unsupported,
+            UnknownField,
         ),
         // Check: types.
         (r#"{id: a, op: admit, expr: "row.qty > 1.5"}"#, TypeMismatch),

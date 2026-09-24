@@ -21,3 +21,14 @@ sha2 = "0.10"
 hex = "0.4"
 thiserror = "2"
 regex-syntax = "0.8"
+
+# DataFusion is large; full debug info for every dependency fills disks quickly.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"

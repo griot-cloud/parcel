@@ -30,6 +30,9 @@ pub struct Caller {
     /// Fixed once per query. Defaults to the time the caller is created.
     #[serde(default = "Utc::now")]
     pub now: DateTime<Utc>,
+    /// Anything else the embedding application knows about the caller: `ctx.other.<field>`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl Caller {
@@ -42,6 +45,7 @@ impl Caller {
             clearance: 0,
             roles: Vec::new(),
             now: Utc::now(),
+            other: Default::default(),
         }
     }
 

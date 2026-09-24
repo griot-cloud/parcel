@@ -22,6 +22,52 @@ use sha2::{Digest, Sha256};
 
 use crate::Caller;
 
+/// The `ctx` namespace for a caller, with `ctx.other` values typed as the contract declares.
+/// A declared field the caller does not supply is absent; reading it is an error, so rules
+/// that depend on it fail closed.
+pub fn ctx_value_typed(c: &Caller, declared: &BTreeMap<String, Type>) -> Value {
+    let Value::Map(base) = ctx_value(c) else {
+        unreachable!("ctx is a map")
+    };
+    let mut m: HashMap<String, Value> = HashMap::new();
+    for (k, v) in base.map.iter() {
+        if let cel::objects::Key::String(k) = k {
+            m.insert(k.to_string(), v.clone());
+        }
+    }
+    let mut other: HashMap<String, Value> = HashMap::new();
+    for (field, ty) in declared {
+        if let Some(v) = c.other.get(field).and_then(|j| json_value(j, ty)) {
+            other.insert(field.clone(), v);
+        }
+    }
+    m.insert("other".into(), other.into());
+    m.into()
+}
+
+/// A JSON value as the CEL value of a declared type, or `None` if it does not fit.
+pub fn json_value(j: &serde_json::Value, ty: &Type) -> Option<Value> {
+    Some(match ty {
+        Type::Bool => Value::Bool(j.as_bool()?),
+        Type::Int => Value::Int(j.as_i64()?),
+        Type::Uint => Value::UInt(j.as_u64()?),
+        Type::Double => Value::Float(j.as_f64()?),
+        Type::String => string(j.as_str()?),
+        Type::Timestamp => timestamp(
+            DateTime::parse_from_rfc3339(j.as_str()?)
+                .ok()?
+                .with_timezone(&Utc),
+        ),
+        Type::List(elem) => Value::List(Arc::new(
+            j.as_array()?
+                .iter()
+                .map(|x| json_value(x, elem))
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        Type::Bytes | Type::Duration => return None,
+    })
+}
+
 /// The `ctx` namespace for a caller.
 pub fn ctx_value(c: &Caller) -> Value {
     let mut m: HashMap<String, Value> = HashMap::new();

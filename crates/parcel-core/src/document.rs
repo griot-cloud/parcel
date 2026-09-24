@@ -26,11 +26,44 @@ pub struct ContractDoc {
     pub rules: Vec<Rule>,
     /// Declared shapes of each namespace's `other` field (design 3.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extensions: Option<Value>,
+    pub extensions: Option<Extensions>,
+    /// Write-time producers of `row.other` fields (design 10, stage 1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enrich: Option<Value>,
+    pub enrich: Option<Vec<Enricher>>,
+    /// Write-time producers of `dataset.other` fields (design 10, stage 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dataset_other: Option<Value>,
+    pub dataset_other: Option<Vec<DatasetProducer>>,
+}
+
+/// Field name → type name, per namespace.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Extensions {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub row: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub ctx: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub dataset: std::collections::BTreeMap<String, String>,
+}
+
+/// Computes one `row.other` field from the row, once, at write.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Enricher {
+    pub field: String,
+    pub expr: String,
+}
+
+/// Produces one `dataset.other` field at write: a constant, or an aggregate such as `avg(row.amount)`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DatasetProducer {
+    pub field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<String>,
 }
 
 /// Where the data physically is. Callers never see this.

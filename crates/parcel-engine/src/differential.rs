@@ -1,6 +1,7 @@
 //! The differential test (design 11): every per-row rule is evaluated twice over a
 //! sample, once by the reference CEL interpreter and once by the translated
-//! DataFusion expression, and any disagreement is a hard failure.
+//! DataFusion expression, and any disagreement is a hard failure. Enrichers are
+//! compared the same way, and each side feeds its own enriched values to the rules.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,7 +18,7 @@ use parcel_runtime::Caller;
 use parcel_runtime::reference::{self, Scope};
 use serde::Serialize;
 
-use crate::engine::param_values;
+use crate::engine::{enrich_plan, param_values};
 use crate::error::{EngineError, Result};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -45,6 +46,20 @@ impl DiffReport {
     }
 }
 
+/// One thing to compare: a rule or an enricher.
+struct Item {
+    id: String,
+    /// Predicates are false on a null read; values are null.
+    predicate: bool,
+    /// Independent of the caller: compare once.
+    caller_free: bool,
+    cel: String,
+    reads: Vec<String>,
+    expr: Expr,
+}
+
+type Cell = std::result::Result<Option<Value>, String>;
+
 /// Compare interpreter and DataFusion over `batch` for each caller.
 pub async fn differential(
     c: &Compilation,
@@ -54,7 +69,6 @@ pub async fn differential(
     let cc = &c.contract;
     let batch = crate::engine::conform_one(batch.clone(), &cc.row_schema)?;
     let rows = batch.num_rows();
-    let row_values = row_maps(&batch);
     let mut report = DiffReport {
         rows,
         callers: callers.len(),
@@ -63,102 +77,130 @@ pub async fn differential(
         mismatches: Vec::new(),
     };
 
-    let exprs: Vec<(&parcel_core::compile::RowRule, Expr)> = cc
-        .row_rules
-        .iter()
-        .map(|r| {
-            let e = match &r.kind {
-                RowRuleKind::Admit => cc
-                    .admits
-                    .iter()
-                    .find(|(id, _)| *id == r.id)
-                    .map(|(_, e)| e.clone()),
-                RowRuleKind::Assert => cc
-                    .flags
-                    .iter()
-                    .find(|f| f.assert_id == r.id)
-                    .map(|f| f.expr.clone()),
-                RowRuleKind::Transform { column } => cc
-                    .projection
-                    .iter()
-                    .find(|(n, _)| n == column)
-                    .map(|(_, e)| e.clone()),
-            };
-            e.map(|e| (r, e))
-                .ok_or_else(|| EngineError::Invalid(format!("rule `{}` has no expression", r.id)))
-        })
-        .collect::<Result<_>>()?;
-    if exprs.is_empty() {
+    let mut items: Vec<Item> = Vec::new();
+    for e in &cc.enrich {
+        let id = format!("enrich.{}", e.field);
+        items.push(Item {
+            id,
+            predicate: false,
+            caller_free: true,
+            cel: e.cel.clone(),
+            reads: e.reads.clone(),
+            expr: e.expr.clone(),
+        });
+    }
+    for r in &cc.row_rules {
+        let expr = match &r.kind {
+            RowRuleKind::Admit => cc
+                .admits
+                .iter()
+                .find(|(id, _)| *id == r.id)
+                .map(|(_, e)| e.clone()),
+            RowRuleKind::Assert => cc
+                .flags
+                .iter()
+                .find(|f| f.assert_id == r.id)
+                .map(|f| f.expr.clone()),
+            RowRuleKind::Transform { column } => cc
+                .projection
+                .iter()
+                .find(|(n, _)| n == column)
+                .map(|(_, e)| e.clone()),
+        }
+        .ok_or_else(|| EngineError::Invalid(format!("rule `{}` has no expression", r.id)))?;
+        items.push(Item {
+            id: r.id.clone(),
+            predicate: !matches!(r.kind, RowRuleKind::Transform { .. }),
+            caller_free: matches!(r.kind, RowRuleKind::Assert),
+            cel: r.cel.clone(),
+            reads: r.reads.clone(),
+            expr,
+        });
+    }
+    if items.is_empty() {
         return Ok(report);
+    }
+
+    // The reference side's rows, each with its own enriched `other` map.
+    let mut row_values = row_maps(&batch);
+    if !cc.enrich.is_empty() {
+        for row in &mut row_values {
+            let mut other: HashMap<String, Value> = HashMap::new();
+            for e in &cc.enrich {
+                if e.reads.iter().all(|r| row.contains_key(r)) {
+                    let scope = Scope {
+                        row: Some(row.clone().into()),
+                        ..Default::default()
+                    };
+                    if let Ok(v) = reference::eval(&e.cel, &reference::context(&scope)) {
+                        other.insert(e.field.clone(), v);
+                    }
+                }
+            }
+            row.insert("other".into(), other.into());
+        }
     }
 
     for (ci, caller) in callers.iter().enumerate() {
         let ctx = SessionContext::new();
         let params = param_values(cc, caller)?;
-        // One plan per rule, so a rule that fails to plan cannot hide the others.
-        let mut per_rule: Vec<std::result::Result<Vec<RecordBatch>, String>> = Vec::new();
-        for (_, e) in &exprs {
+        let caller_value = reference::ctx_value_typed(caller, &cc.ctx_other);
+        let who = format!("{}/{}", caller.tenant, caller.id);
+        for item in &items {
+            if item.caller_free && ci > 0 {
+                continue;
+            }
             let mem = MemTable::try_new(cc.row_schema.clone(), vec![vec![batch.clone()]])?;
             let run = async {
-                let plan =
+                let scan =
                     LogicalPlanBuilder::scan("sample", provider_as_source(Arc::new(mem)), None)?
-                        .project(vec![e.clone().alias("r")])?
                         .build()?;
+                let enriched = enrich_plan(scan, cc)
+                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+                let plan = LogicalPlanBuilder::from(enriched)
+                    .project(vec![item.expr.clone().alias("r")])?
+                    .build()?;
                 let plan =
                     parcel_core::compile::resolve(plan)?.with_param_values(params.clone())?;
                 ctx.execute_logical_plan(plan).await?.collect().await
             };
-            per_rule.push(run.await.map_err(|e| e.to_string()));
-        }
-        let caller_value = reference::ctx_value(caller);
-        let who = format!("{}/{}", caller.tenant, caller.id);
-        for (ri, (rule, _)) in exprs.iter().enumerate() {
-            // Asserts do not read ctx: check them once.
-            if matches!(rule.kind, RowRuleKind::Assert) && ci > 0 {
-                continue;
-            }
-            let actual: Vec<std::result::Result<Option<Value>, String>> = match &per_rule[ri] {
-                Ok(batches) => {
-                    let mut out = Vec::with_capacity(rows);
-                    for b in batches {
-                        for i in 0..b.num_rows() {
-                            out.push(
-                                ScalarValue::try_from_array(b.column(0), i)
-                                    .map(|s| reference::from_scalar(&s))
-                                    .map_err(|e| e.to_string()),
-                            );
-                        }
-                    }
-                    out
-                }
-                Err(e) => vec![Err(e.clone()); rows],
+            let actual: Vec<Cell> = match run.await {
+                Ok(batches) => batches
+                    .iter()
+                    .flat_map(|b| {
+                        (0..b.num_rows()).map(move |i| {
+                            ScalarValue::try_from_array(b.column(0), i)
+                                .map(|s| reference::from_scalar(&s))
+                                .map_err(|e| e.to_string())
+                        })
+                    })
+                    .collect(),
+                Err(e) => vec![Err(e.to_string()); rows],
             };
-            let predicate = !matches!(rule.kind, RowRuleKind::Transform { .. });
             for (i, row) in row_values.iter().enumerate() {
                 report.evaluations += 1;
-                let expected: std::result::Result<Option<Value>, String> =
-                    if rule.reads.iter().any(|c| !row.contains_key(c)) {
-                        // parcel's null rule, applied by the reference side explicitly.
-                        Ok(if predicate {
-                            Some(Value::Bool(false))
-                        } else {
-                            None
-                        })
+                let expected: Cell = if item.reads.iter().any(|r| !reads_present(row, r)) {
+                    // parcel's null rule, applied by the reference side explicitly.
+                    Ok(if item.predicate {
+                        Some(Value::Bool(false))
                     } else {
-                        let scope = Scope {
-                            ctx: Some(caller_value.clone()),
-                            dataset: None,
-                            row: Some(row.clone().into()),
-                        };
-                        reference::eval(&rule.cel, &reference::context(&scope)).map(Some)
+                        None
+                    })
+                } else {
+                    let scope = Scope {
+                        ctx: Some(caller_value.clone()),
+                        dataset: None,
+                        row: Some(row.clone().into()),
                     };
+                    reference::eval(&item.cel, &reference::context(&scope)).map(Some)
+                };
                 let got = actual.get(i).cloned().unwrap_or(Err("missing row".into()));
                 if expected.is_err() && got.is_err() {
                     report.both_errored += 1;
                 }
                 if !agree(&expected, &got) {
                     report.mismatches.push(Mismatch {
-                        rule: rule.id.clone(),
+                        rule: item.id.clone(),
                         caller: who.clone(),
                         row: i,
                         reference: show(&expected),
@@ -169,6 +211,19 @@ pub async fn differential(
         }
     }
     Ok(report)
+}
+
+/// Whether a value read (`col` or `other.<field>`) is present, i.e. not null.
+fn reads_present(row: &HashMap<String, Value>, read: &str) -> bool {
+    match read.strip_prefix("other.") {
+        Some(f) => match row.get("other") {
+            Some(Value::Map(m)) => m
+                .map
+                .contains_key(&cel::objects::Key::String(Arc::new(f.to_owned()))),
+            _ => false,
+        },
+        None => row.contains_key(read),
+    }
 }
 
 fn row_maps(batch: &RecordBatch) -> Vec<HashMap<String, Value>> {
@@ -188,10 +243,7 @@ fn row_maps(batch: &RecordBatch) -> Vec<HashMap<String, Value>> {
         .collect()
 }
 
-fn agree(
-    a: &std::result::Result<Option<Value>, String>,
-    b: &std::result::Result<Option<Value>, String>,
-) -> bool {
+fn agree(a: &Cell, b: &Cell) -> bool {
     match (a, b) {
         (Ok(Some(Value::Float(x))), Ok(Some(Value::Float(y)))) => {
             x == y || (x - y).abs() <= 1e-9 * x.abs().max(y.abs()).max(1.0)
@@ -203,7 +255,7 @@ fn agree(
     }
 }
 
-fn show(v: &std::result::Result<Option<Value>, String>) -> String {
+fn show(v: &Cell) -> String {
     match v {
         Ok(Some(v)) => format!("{v:?}"),
         Ok(None) => "null".into(),

@@ -37,7 +37,7 @@ pub fn root(contract: &CompiledContract, base: &Path) -> PathBuf {
 pub fn file_schema(contract: &CompiledContract) -> SchemaRef {
     let parts = &contract.binding.partitioned_by;
     let mut fields: Vec<Field> = contract
-        .row_schema
+        .scan_schema
         .fields()
         .iter()
         .filter(|f| !parts.contains(f.name()))

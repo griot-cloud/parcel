@@ -87,7 +87,13 @@ impl Bundle {
                 hex::encode(d.expr.to_bytes()?),
             );
         }
-        let plan = portable_plan(&c.validation.plan, schema)?;
+        for e in &cc.enrich {
+            exprs.insert(
+                format!("enrich/{}", e.field),
+                hex::encode(e.expr.to_bytes()?),
+            );
+        }
+        let plan = portable_plan(&c.validation.plan, &cc.scan_schema)?;
         let plan_bytes = logical_plan_to_bytes_with_extension_codec(&plan, &BindingCodec)?;
         Ok(Bundle {
             format: FORMAT.into(),
@@ -177,12 +183,16 @@ impl Bundle {
         for d in &c.contract.derived {
             check(format!("derived/{}", d.column), &d.expr)?;
         }
+        for e in &c.contract.enrich {
+            check(format!("enrich/{}", e.field), &e.expr)?;
+        }
         let expected = c.contract.admits.len()
             + c.contract.flags.len()
             + c.contract.projection.len()
             + c.contract.admits_stored.len()
             + c.contract.projection_stored.len()
-            + c.contract.derived.len();
+            + c.contract.derived.len()
+            + c.contract.enrich.len();
         if self.exprs.len() != expected {
             return Err(format!(
                 "the bundle carries {} expressions; the contract compiles to {expected}",
@@ -190,7 +200,8 @@ impl Bundle {
             ));
         }
         let plan = self.validation_plan(&ctx.task_ctx())?;
-        let want = portable_plan(&c.validation.plan, &schema).map_err(|e| e.to_string())?;
+        let want = portable_plan(&c.validation.plan, &c.contract.scan_schema)
+            .map_err(|e| e.to_string())?;
         if plan.display_indent().to_string() != want.display_indent().to_string() {
             return Err(
                 "the validation plan in the bundle differs from the recompiled contract".into(),

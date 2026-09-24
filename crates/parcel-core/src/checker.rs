@@ -22,6 +22,16 @@ pub struct Env<'a> {
     /// Ids of `assert` rules, which `dataset.assertions.<id>.pass_rate` may name.
     pub assertions: &'a BTreeSet<String>,
     pub registry: &'a Registry,
+    /// Declared extension fields per namespace (design 3.1).
+    pub other: &'a OtherTypes,
+}
+
+/// Declared `other` fields and their types.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct OtherTypes {
+    pub row: BTreeMap<String, Type>,
+    pub ctx: BTreeMap<String, Type>,
+    pub dataset: BTreeMap<String, Type>,
 }
 
 /// Parse and check one CEL expression.
@@ -163,13 +173,33 @@ impl Checker<'_, '_> {
             );
         }
         if p.get(1) == Some(&"other") {
-            return self.err(
-                Code::Unsupported,
-                format!(
-                    "`{}.other` extension fields are not supported in parcel v0",
-                    p[0]
-                ),
-            );
+            let (declared, ns) = match p[0] {
+                "row" => (&self.env.other.row, "row"),
+                "ctx" => (&self.env.other.ctx, "ctx"),
+                _ => (&self.env.other.dataset, "dataset"),
+            };
+            let [_, _, field] = p.as_slice() else {
+                return self.err(
+                    Code::OutsideProfile,
+                    format!(
+                        "`{}` must name one extension field, e.g. `{}.other.<field>`",
+                        path.join("."),
+                        p[0]
+                    ),
+                );
+            };
+            let Some(ty) = declared.get(*field) else {
+                return self.err(
+                    Code::UnknownField,
+                    format!("`{ns}.other.{field}` is not declared; add `{field}: <type>` under `extensions.{ns}`"),
+                );
+            };
+            let var = match ns {
+                "row" => Var::RowOther((*field).to_owned()),
+                "ctx" => Var::CtxOther((*field).to_owned()),
+                _ => Var::Dataset(DatasetField::Other((*field).to_owned())),
+            };
+            return Some(TExpr::new(ExprKind::Var(var), ty.clone()));
         }
         match p.as_slice() {
             ["row", col] => self.row_var(col),
@@ -296,6 +326,18 @@ impl Checker<'_, '_> {
             Some([root]) if root == "row" => {
                 self.row_var(&s.field)?;
                 Some(TExpr::new(ExprKind::Has(s.field.clone()), Type::Bool))
+            }
+            Some([root, other]) if root == "row" && other == "other" => {
+                if !self.env.other.row.contains_key(&s.field) {
+                    return self.err(
+                        Code::UnknownField,
+                        format!(
+                            "`row.other.{}` is not declared under `extensions.row`",
+                            s.field
+                        ),
+                    );
+                }
+                Some(TExpr::new(ExprKind::HasOther(s.field.clone()), Type::Bool))
             }
             _ => self.err(
                 Code::OutsideProfile,

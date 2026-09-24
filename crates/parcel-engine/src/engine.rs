@@ -290,8 +290,14 @@ impl Engine {
 
         let ctx = Self::session();
         let mem = MemTable::try_new(cc.row_schema.clone(), vec![batches])?;
+        // Stage 1: enrich. Stage 2: flags and derived columns, which may read what stage 1 produced.
+        let plan = enrich_plan(
+            LogicalPlanBuilder::scan("incoming", provider_as_source(Arc::new(mem)), None)?
+                .build()?,
+            cc,
+        )?;
         let mut select: Vec<Expr> = cc
-            .row_schema
+            .scan_schema
             .fields()
             .iter()
             .map(|f| col_ref(f.name()))
@@ -302,9 +308,7 @@ impl Engine {
         for d in &r.compilation.write.derived {
             select.push(d.expr.clone().alias(&d.column));
         }
-        let plan = LogicalPlanBuilder::scan("incoming", provider_as_source(Arc::new(mem)), None)?
-            .project(select)?
-            .build()?;
+        let plan = LogicalPlanBuilder::from(plan).project(select)?.build()?;
         let plan = parcel_core::compile::resolve(plan)?;
         let df = ctx.execute_logical_plan(plan).await?;
 
@@ -503,7 +507,7 @@ impl Engine {
         let cc = &r.compilation.contract;
         parcel_runtime::verify_pins(&cc.functions)?;
         let ctx_scope = Scope {
-            ctx: Some(reference::ctx_value(caller)),
+            ctx: Some(reference::ctx_value_typed(caller, &cc.ctx_other)),
             ..Default::default()
         };
         let ctx = reference::context(&ctx_scope);
@@ -637,7 +641,10 @@ impl Engine {
     pub fn describe(&self, name: &str, caller: &Caller) -> Result<SchemaRef> {
         let r = self.get(name)?;
         let ctx = reference::context(&Scope {
-            ctx: Some(reference::ctx_value(caller)),
+            ctx: Some(reference::ctx_value_typed(
+                caller,
+                &r.compilation.contract.ctx_other,
+            )),
             ..Default::default()
         });
         for d in &r.compilation.contract.decisions {
@@ -768,7 +775,7 @@ pub fn bind_binding(
     provider: Arc<dyn datafusion::datasource::TableProvider>,
 ) -> Result<LogicalPlan> {
     let columns: Vec<Expr> = cc
-        .row_schema
+        .scan_schema
         .fields()
         .iter()
         .map(|f| {
@@ -794,10 +801,34 @@ pub fn bind_binding(
     Ok(out.data.recompute_schema()?)
 }
 
+/// Add the `_other` struct column the contract's enrichers produce (design 10, stage 1).
+pub fn enrich_plan(input: LogicalPlan, cc: &CompiledContract) -> Result<LogicalPlan> {
+    if cc.enrich.is_empty() {
+        return Ok(input);
+    }
+    let mut select: Vec<Expr> = input
+        .schema()
+        .columns()
+        .into_iter()
+        .map(Expr::Column)
+        .collect();
+    let mut args = Vec::new();
+    for e in &cc.enrich {
+        args.push(datafusion::logical_expr::lit(e.field.clone()));
+        args.push(e.expr.clone());
+    }
+    select.push(
+        datafusion::functions::core::expr_fn::named_struct(args)
+            .alias(parcel_core::ir::OTHER_COLUMN),
+    );
+    let plan = LogicalPlanBuilder::from(input).project(select)?.build()?;
+    Ok(parcel_core::compile::resolve(plan)?)
+}
+
 /// Values for every `ctx` placeholder, from the reference interpreter.
 pub fn param_values(cc: &CompiledContract, caller: &Caller) -> Result<ParamValues> {
     let ctx = reference::context(&Scope {
-        ctx: Some(reference::ctx_value(caller)),
+        ctx: Some(reference::ctx_value_typed(caller, &cc.ctx_other)),
         ..Default::default()
     });
     let mut map = HashMap::new();

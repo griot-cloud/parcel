@@ -12,7 +12,6 @@
 //!   a null in any row field a rule reads makes an `admit`/`assert` false and a
 //!   `transform` null. Fields tested only through `has()` are exempt.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -106,16 +105,14 @@ impl Translator<'_> {
         })
     }
 
-    /// `col IS NOT NULL AND ...` for every row column the expression reads (not counting `has()`).
+    /// `col IS NOT NULL AND ...` for every row value the expression reads (not counting `has()`).
     fn guard(&self, e: &TExpr) -> Option<Expr> {
-        let mut cols = BTreeSet::new();
-        e.walk(&mut |n| {
-            if let ExprKind::Var(Var::Row(c)) = &n.kind {
-                cols.insert(c.clone());
-            }
-        });
-        cols.into_iter()
-            .map(|c| is_not_null(column(&c)))
+        e.value_reads()
+            .into_iter()
+            .map(|r| match r.strip_prefix("other.") {
+                Some(f) => is_not_null(other_field(f)),
+                None => is_not_null(column(&r)),
+            })
             .reduce(Expr::and)
     }
 
@@ -132,6 +129,7 @@ impl Translator<'_> {
         Ok(match &e.kind {
             ExprKind::Lit(l) => lit(lit_value(l)),
             ExprKind::Var(Var::Row(c)) => self.row(c, &e.ty)?,
+            ExprKind::Var(Var::RowOther(f)) => other_field(f),
             ExprKind::Var(Var::Dataset(d)) if self.dataset_columns => column(&stat_column(d)),
             ExprKind::Var(v) => {
                 return Err(format!(
@@ -150,6 +148,7 @@ impl Translator<'_> {
                 .otherwise(self.expr(b)?)
                 .map_err(|x| x.to_string())?,
             ExprKind::Has(c) => is_not_null(column(c)),
+            ExprKind::HasOther(f) => is_not_null(other_field(f)),
             ExprKind::Builtin(b, args) => self.builtin(*b, args)?,
             ExprKind::Call(pin, args) => {
                 let args = args
@@ -318,7 +317,13 @@ pub fn stat_column(d: &DatasetField) -> String {
         DatasetField::AssertionPassRate { assertion } => {
             format!("assertions__{assertion}__pass_rate")
         }
+        DatasetField::Other(f) => format!("other__{f}"),
     }
+}
+
+/// `row.other.<field>`: a field of the `_other` struct column.
+pub fn other_field(field: &str) -> Expr {
+    datafusion_functions::core::expr_fn::get_field(column(crate::ir::OTHER_COLUMN), field)
 }
 
 /// `parcel_bytes_len(binary) -> int64`: DataFusion's `octet_length` takes strings only.

@@ -93,6 +93,18 @@ pub struct Derived {
     pub ty: Type,
 }
 
+/// One `row.other` field, computed at write from raw columns (design 10, stage 1).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EnrichSpec {
+    pub field: String,
+    /// Reference CEL over raw columns (earlier enrichers inlined).
+    pub cel: String,
+    pub reads: Vec<String>,
+    #[serde(serialize_with = "ser_expr")]
+    pub expr: Expr,
+    pub ty: Type,
+}
+
 /// How a rule will execute, shown to the author (design 9.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -151,6 +163,13 @@ pub struct CompiledContract {
     pub row_rules: Vec<RowRule>,
     /// Row-only subtrees stored at write time.
     pub derived: Vec<Derived>,
+    /// The binding's scan schema: the data's columns plus `_other` when enrichers produce it.
+    #[serde(serialize_with = "ser_schema")]
+    pub scan_schema: SchemaRef,
+    /// `row.other` producers, run at write before anything else.
+    pub enrich: Vec<EnrichSpec>,
+    /// Declared `ctx.other` fields: how the embedding application's values are typed.
+    pub ctx_other: BTreeMap<String, Type>,
     /// The admits and projection with derived subtrees read from storage. Equal to the live
     /// versions when nothing is derived; valid only over files written under this contract.
     #[serde(serialize_with = "ser_named_exprs")]
@@ -197,6 +216,7 @@ pub struct Layout {
 /// What must exist on disk for every rule to be cheap at query time (design 10).
 #[derive(Clone, Debug, Serialize)]
 pub struct WritePlan {
+    pub enrich: Vec<EnrichSpec>,
     pub flags: Vec<Flag>,
     pub derived: Vec<Derived>,
     pub layout: Layout,
@@ -309,12 +329,7 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
             _ => None,
         };
         if let (Some(kind), Some(x)) = (row_kind, rule.exprs().first()) {
-            let mut reads = BTreeSet::new();
-            x.expr.walk(&mut |n| {
-                if let ExprKind::Var(Var::Row(c)) = &n.kind {
-                    reads.insert(c.clone());
-                }
-            });
+            let reads = x.expr.value_reads();
             row_rules.push(RowRule {
                 id: rule.id().to_owned(),
                 kind,
@@ -511,7 +526,28 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
             .collect::<Vec<_>>(),
     ));
 
-    let validation = validation_plan(c, schema, &flags)?;
+    let scan_schema = scan_schema(c, schema);
+    let validation = validation_plan(c, &scan_schema, &flags)?;
+    let mut enrich = Vec::new();
+    for (field, x) in &c.enrichers {
+        let mut scratch = Params::default();
+        let mut t = Translator {
+            schema,
+            params: &mut scratch,
+            dataset_columns: false,
+            derived: None,
+        };
+        let expr = t
+            .transform(&x.expr)
+            .map_err(|e| (Some(format!("enrich.{field}")), e))?;
+        enrich.push(EnrichSpec {
+            field: field.clone(),
+            cel: print(&x.expr, Style::Reference),
+            reads: x.expr.value_reads().into_iter().collect(),
+            expr,
+            ty: x.expr.ty.clone(),
+        });
+    }
     let write = WritePlan {
         layout: Layout {
             cluster_by: flags
@@ -522,6 +558,7 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
             partition_by: c.binding.partitioned_by.clone(),
             bloom: bloom_columns(c),
         },
+        enrich: enrich.clone(),
         flags: flags.clone(),
         derived: derived.clone(),
         manifest_fields: vec![
@@ -555,6 +592,9 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
             report,
             row_rules,
             derived,
+            scan_schema: Arc::new(scan_schema),
+            enrich,
+            ctx_other: c.other.ctx.clone(),
             admits_stored,
             projection_stored,
         },
@@ -613,6 +653,10 @@ fn validation_plan(
                     .filter(|d| !matches!(d, DatasetField::WrittenAt | DatasetField::ContractHash)),
             );
         }
+    }
+    // Every dataset.other producer is carried, read or not: the manifest records them.
+    for p in &c.producers {
+        fields.push(DatasetField::Other(p.field.clone()));
     }
     let mut seen = BTreeSet::new();
     fields.retain(|f| seen.insert(f.clone()));
@@ -675,6 +719,53 @@ fn validation_plan(
                         )
                     }
                 }
+            }
+            DatasetField::Other(field) => {
+                let p = c
+                    .producers
+                    .iter()
+                    .find(|p| &p.field == field)
+                    .expect("checker verified producers");
+                let mut scratch = Params::default();
+                let mut t = Translator {
+                    schema,
+                    params: &mut scratch,
+                    dataset_columns: false,
+                    derived: None,
+                };
+                let arg = match &p.kind {
+                    crate::check::ProducerKind::Constant(_) => {
+                        stats.push(StatSpec {
+                            field: d.clone(),
+                            column: name.clone(),
+                            path: crate::cel_print::var_path(&Var::Dataset(d.clone())),
+                            ty: p.ty.clone(),
+                        });
+                        continue; // a literal, added in stage 2
+                    }
+                    crate::check::ProducerKind::Aggregate { arg, .. } => match arg {
+                        Some(a) => Some(
+                            t.expr(&a.expr)
+                                .map_err(|e| (Some(format!("dataset_other.{field}")), e))?,
+                        ),
+                        None => None,
+                    },
+                };
+                use crate::check::Aggregate as A;
+                let crate::check::ProducerKind::Aggregate { func, .. } = &p.kind else {
+                    unreachable!()
+                };
+                let a = || arg.clone().expect("checker requires an argument");
+                let e = match func {
+                    A::Count => agg::count(lit(1i64)),
+                    A::Sum => agg::sum(a()),
+                    A::Avg => agg::avg(a()),
+                    A::Min => agg::min(a()),
+                    A::Max => agg::max(a()),
+                    A::CountDistinct => agg::count_distinct(a()),
+                    A::Median => agg::median(cast(a(), DataType::Float64)),
+                };
+                (p.ty.clone(), cast(e, p.ty.to_arrow()).alias(name.clone()))
             }
             DatasetField::WrittenAt | DatasetField::ContractHash => unreachable!("filtered above"),
         };
@@ -750,6 +841,17 @@ fn validation_plan(
                     .otherwise(lit(0.0f64))
                     .map_err(fail)?
             }
+            DatasetField::Other(field) => match c
+                .producers
+                .iter()
+                .find(|p| &p.field == field)
+                .map(|p| &p.kind)
+            {
+                Some(crate::check::ProducerKind::Constant(l)) => {
+                    lit(crate::translate::lit_value(l))
+                }
+                _ => column(&s.column),
+            },
             _ => column(&s.column),
         };
         out.push(e.alias(&s.column));
@@ -836,6 +938,32 @@ fn validation_plan(
         data_guarantees,
         query_time_guarantees,
     })
+}
+
+/// The schema the binding is scanned with: the data's columns, plus `_other` when enrichers produce it.
+pub fn scan_schema(c: &CheckedContract, schema: &Schema) -> Schema {
+    match other_type(c) {
+        Some(t) if schema.field_with_name(crate::ir::OTHER_COLUMN).is_err() => {
+            let mut fields: Vec<Field> =
+                schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+            fields.push(Field::new(crate::ir::OTHER_COLUMN, t, true));
+            Schema::new(fields)
+        }
+        _ => schema.clone(),
+    }
+}
+
+/// The Arrow struct type of `_other` as the enrichers produce it.
+pub fn other_type(c: &CheckedContract) -> Option<DataType> {
+    if c.enrichers.is_empty() {
+        return None;
+    }
+    let fields: Vec<Field> = c
+        .enrichers
+        .iter()
+        .map(|(f, x)| Field::new(f, x.expr.ty.to_arrow(), true))
+        .collect();
+    Some(DataType::Struct(fields.into()))
 }
 
 /// Bind lambda variables (from CEL macros) to their element types. Every plan that

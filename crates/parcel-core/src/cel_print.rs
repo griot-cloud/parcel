@@ -85,6 +85,9 @@ fn write_expr(e: &TExpr, style: Style, o: &mut String) {
         ExprKind::Has(c) => {
             let _ = write!(o, "has(row.{c})");
         }
+        ExprKind::HasOther(f) => {
+            let _ = write!(o, "has(row.other.{f})");
+        }
         ExprKind::Builtin(b, args) => {
             let global = |name: &str, o: &mut String| {
                 o.push_str(name);
@@ -171,7 +174,9 @@ fn write_expr(e: &TExpr, style: Style, o: &mut String) {
 pub fn var_path(v: &Var) -> String {
     match v {
         Var::Row(c) => format!("row.{c}"),
+        Var::RowOther(f) => format!("row.other.{f}"),
         Var::Ctx(f) => format!("ctx.{}", f.name()),
+        Var::CtxOther(f) => format!("ctx.other.{f}"),
         Var::Dataset(d) => match d {
             DatasetField::RowCount => "dataset.row_count".into(),
             DatasetField::WrittenAt => "dataset.written_at".into(),
@@ -182,6 +187,7 @@ pub fn var_path(v: &Var) -> String {
             DatasetField::AssertionPassRate { assertion } => {
                 format!("dataset.assertions.{assertion}.pass_rate")
             }
+            DatasetField::Other(f) => format!("dataset.other.{f}"),
         },
     }
 }
