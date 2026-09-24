@@ -535,14 +535,11 @@ impl Checker<'_, '_> {
                 }
                 Some((Builtin::Matches, Bool))
             }
-            ("int", false, [Int | Uint | Double | String | Timestamp]) => {
-                Some((Builtin::ToInt, Int))
-            }
+            ("int", false, [Int | Uint | Double | String]) => Some((Builtin::ToInt, Int)),
             ("uint", false, [Int | Uint | Double | String]) => Some((Builtin::ToUint, Uint)),
             ("double", false, [Int | Uint | Double | String]) => Some((Builtin::ToDouble, Double)),
-            ("string", false, [Int | Uint | Double | String | Bool | Timestamp | Duration]) => {
-                Some((Builtin::ToString, String))
-            }
+            // Not double, bool, timestamp or duration: CEL and Arrow format those differently.
+            ("string", false, [Int | Uint | String]) => Some((Builtin::ToString, String)),
             ("timestamp", false, [String | Timestamp]) => Some((Builtin::ToTimestamp, Timestamp)),
             ("duration", false, [String | Duration]) => Some((Builtin::ToDuration, Duration)),
             ("getFullYear", true, [Timestamp]) => Some((Builtin::GetFullYear, Int)),
@@ -550,9 +547,9 @@ impl Checker<'_, '_> {
             ("getDayOfMonth", true, [Timestamp]) => Some((Builtin::GetDayOfMonth, Int)),
             ("getDayOfWeek", true, [Timestamp]) => Some((Builtin::GetDayOfWeek, Int)),
             ("getDayOfYear", true, [Timestamp]) => Some((Builtin::GetDayOfYear, Int)),
-            ("getHours", true, [Timestamp | Duration]) => Some((Builtin::GetHours, Int)),
-            ("getMinutes", true, [Timestamp | Duration]) => Some((Builtin::GetMinutes, Int)),
-            ("getSeconds", true, [Timestamp | Duration]) => Some((Builtin::GetSeconds, Int)),
+            ("getHours", true, [Timestamp]) => Some((Builtin::GetHours, Int)),
+            ("getMinutes", true, [Timestamp]) => Some((Builtin::GetMinutes, Int)),
+            ("getSeconds", true, [Timestamp]) => Some((Builtin::GetSeconds, Int)),
             _ => None,
         };
         if let Some((b, ty)) = found {

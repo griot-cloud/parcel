@@ -36,6 +36,8 @@ pub enum Code {
     TransformTarget,
     DuplicateTransform,
     UnknownShapeOperator,
+    /// Checked, but the translator has no DataFusion equivalent.
+    Untranslatable,
     ShapeParams,
 }
 

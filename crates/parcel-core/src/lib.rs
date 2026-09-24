@@ -24,18 +24,22 @@
 //! assert_eq!(checked.rules.len(), 1);
 //! ```
 
+pub mod cel_print;
 pub mod check;
 pub mod checker;
+pub mod compile;
 pub mod diag;
 pub mod document;
 pub mod hash;
 pub mod ir;
 pub mod registry;
+pub mod translate;
 pub mod types;
 
 pub use check::{
     CheckedContract, CheckedExpr, CheckedRule, ShapeOp, check_contract, contract_hash,
 };
+pub use compile::{Compilation, CompiledContract, ValidationPlan, WritePlan, compile};
 pub use diag::{Code, Diagnostic};
 pub use document::ContractDoc;
 pub use registry::Registry;
