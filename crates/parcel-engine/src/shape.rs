@@ -77,22 +77,28 @@ pub fn sample_predicate(key: &str, fraction: f64) -> Expr {
     )
 }
 
+/// Whether the query aggregates anywhere, subqueries included.
 pub fn has_aggregate(plan: &LogicalPlan) -> bool {
-    plan.exists(|p| Ok(matches!(p, LogicalPlan::Aggregate(_))))
-        .unwrap_or(false)
+    let mut found = false;
+    let _ = plan.apply_with_subqueries(|p| {
+        found |= matches!(p, LogicalPlan::Aggregate(_));
+        Ok(if found {
+            TreeNodeRecursion::Stop
+        } else {
+            TreeNodeRecursion::Continue
+        })
+    });
+    found
 }
 
 /// Drop every group of the topmost aggregate with fewer than `k` rows, invisibly to the parents.
+/// Every aggregate in the query, not only the outermost: a UNION of two aggregates must not
+/// leak small groups through its second branch.
 pub fn suppress_groups(plan: LogicalPlan, k: u64) -> Result<LogicalPlan> {
-    let mut done = false;
-    let out = plan.transform_down(|node| {
-        if done {
-            return Ok(Transformed::new(node, false, TreeNodeRecursion::Jump));
-        }
+    let out = plan.transform_up_with_subqueries(|node| {
         let LogicalPlan::Aggregate(a) = &node else {
             return Ok(Transformed::no(node));
         };
-        done = true;
         let original: Vec<Expr> = a.schema.columns().into_iter().map(Expr::Column).collect();
         let mut aggr = a.aggr_expr.clone();
         aggr.push(count(lit(1i64)).alias(GROUP_SIZE));
@@ -101,7 +107,7 @@ pub fn suppress_groups(plan: LogicalPlan, k: u64) -> Result<LogicalPlan> {
             .filter(binary_expr(col(GROUP_SIZE), Operator::GtEq, lit(k as i64)))?
             .project(original)?
             .build()?;
-        Ok(Transformed::new(rebuilt, true, TreeNodeRecursion::Jump))
+        Ok(Transformed::yes(rebuilt))
     })?;
     Ok(out.data)
 }
@@ -211,7 +217,7 @@ pub fn apply_noise(
         )));
     }
     let mut touched: Vec<(String, f64)> = Vec::new();
-    let out = plan.transform_up(|node| {
+    let out = plan.transform_up_with_subqueries(|node| {
         let LogicalPlan::Aggregate(a) = &node else {
             return Ok(Transformed::no(node));
         };

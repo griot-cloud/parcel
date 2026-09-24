@@ -105,6 +105,22 @@ parcel function register functions/meter_serial.wasm --manifest functions/is_met
 
 A contract with `owner: kplc` can then call `is_meter_serial(row.meter)` in any rule or enricher. See `examples/udf-meter-serial` for the module and `examples/utility` for a workspace that uses it.
 
+## What is enforced, and where the limits are
+
+For each caller, `parcel-engine` does the following:
+- evaluates `decide` rules before any file is opened
+- refuses data whose deny-level asserts or guarantees fail
+- builds a view that holds the contract's filters and transforms
+- runs the caller's SQL on a session where contract views are the only tables
+
+These cannot reach raw data or plans: DDL (`CREATE EXTERNAL TABLE`), DML, `COPY`, `SET` and `EXPLAIN`. Columns a contract does not expose do not exist for the caller, not even in `WHERE`. `suppress` covers every aggregate in a query, including those in `UNION` branches and scalar subqueries. `noise` does the same, and it refuses queries that read a noised column outside an aggregate.
+
+Known limits:
+- Callers are authenticated by the embedding application, not by parcel.
+- `noise` protects aggregates of the noised column. It does not add noise to counts of rows filtered on that column.
+- The privacy budget store is in memory and resets when the process restarts.
+- `parcel-engine` is the reference executor. peQL is the production engine, with the gate operator described in the peQL design.
+
 ## Crates
 
 | Crate | What it is |

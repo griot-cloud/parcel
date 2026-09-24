@@ -830,6 +830,30 @@ impl Engine {
         }
 
         let mut plan = ctx.state().create_logical_plan(sql).await?;
+        // Callers read through contracts, nothing else: no DDL (CREATE EXTERNAL TABLE would reach
+        // raw files), no DML or COPY, no SET, and no EXPLAIN (it would show bindings and rules).
+        datafusion::execution::context::SQLOptions::new()
+            .with_allow_ddl(false)
+            .with_allow_dml(false)
+            .with_allow_statements(false)
+            .verify_plan(&plan)
+            .map_err(|_| {
+                EngineError::Invalid("only queries are allowed: no DDL, DML, COPY or SET".into())
+            })?;
+        if plan
+            .exists(|p| {
+                Ok(matches!(
+                    p,
+                    LogicalPlan::Explain(_) | LogicalPlan::Analyze(_)
+                ))
+            })
+            .unwrap_or(true)
+        {
+            return Err(EngineError::Invalid(
+                "EXPLAIN is not available to callers; operators use `parcel query --explain`"
+                    .into(),
+            ));
+        }
         let shapes: Vec<&ShapeOp> = resolutions
             .iter()
             .flat_map(|r| r.active_shapes.iter())

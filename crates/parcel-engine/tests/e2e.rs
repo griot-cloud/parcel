@@ -314,6 +314,46 @@ async fn end_to_end() {
         m.err()
     );
 
+    // Nor by DDL, DML, COPY, SET or EXPLAIN.
+    for attack in [
+        "CREATE EXTERNAL TABLE raw STORED AS PARQUET LOCATION 'orders/'",
+        "COPY (SELECT * FROM \"sales/orders\") TO '/tmp/leak.parquet'",
+        "INSERT INTO \"sales/orders\" VALUES (1)",
+        "SET datafusion.execution.batch_size = 1",
+        "EXPLAIN SELECT * FROM \"sales/orders\"",
+        "EXPLAIN ANALYZE SELECT * FROM \"sales/orders\"",
+    ] {
+        assert!(
+            engine.query(attack, &analyst("globex")).await.is_err(),
+            "allowed: {attack}"
+        );
+    }
+
+    // suppress applies to every aggregate: a UNION cannot leak small groups via its second branch.
+    let union = r#"SELECT region, COUNT(*) AS n FROM "sales/orders" GROUP BY region
+                   UNION ALL SELECT email, COUNT(*) FROM "sales/orders" GROUP BY email"#;
+    let res = engine.query(union, &analyst("globex")).await.unwrap();
+    for b in &res.batches {
+        let n = datafusion::arrow::compute::cast(b.column(1), &DataType::Int64).unwrap();
+        let n = n.as_any().downcast_ref::<Int64Array>().unwrap();
+        assert!(
+            n.iter().all(|v| v.unwrap() >= 5),
+            "a group smaller than k leaked"
+        );
+    }
+
+    // ... nor through an aggregate inside a scalar subquery (membership probing). Order 1 is
+    // globex's and unique: probing "is there exactly one order 1?" must not answer.
+    assert!(
+        data.iter()
+            .any(|o| o.order_id == Some(1) && o.tenant == "globex")
+    );
+    let probe = r#"SELECT order_id FROM "sales/orders"
+                   WHERE (SELECT COUNT(*) FROM "sales/orders" WHERE order_id = 1) = 1"#
+        .to_owned();
+    let res = engine.query(&probe, &analyst("globex")).await.unwrap();
+    assert_eq!(res.envelope.rows, 0, "a count below k answered a probe");
+
     // Raw files are not reachable by name.
     assert!(
         engine
