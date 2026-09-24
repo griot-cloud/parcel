@@ -21,7 +21,13 @@ pub enum Type {
     Timestamp,
     Duration,
     List(Box<Type>),
+    /// An exact decimal with this many digits after the point, at most 18 digits in all.
+    /// The reference interpreter sees its unscaled integer (100.50 at scale 2 is 10050).
+    Decimal(i8),
 }
+
+/// Decimals rules can read: 18 digits fit an i64 unscaled value exactly.
+pub const DECIMAL_PRECISION: u8 = 18;
 
 impl Type {
     pub fn list(elem: Type) -> Type {
@@ -39,6 +45,7 @@ impl Type {
                 | Type::Bytes
                 | Type::Timestamp
                 | Type::Duration
+                | Type::Decimal(_)
         )
     }
 
@@ -58,6 +65,7 @@ impl Type {
             Type::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             Type::Duration => DataType::Duration(TimeUnit::Microsecond),
             Type::List(elem) => DataType::List(Field::new_list_field(elem.to_arrow(), true).into()),
+            Type::Decimal(s) => DataType::Decimal128(DECIMAL_PRECISION, *s),
         }
     }
 
@@ -79,15 +87,17 @@ impl Type {
             | DataType::LargeList(f)
             | DataType::ListView(f)
             | DataType::LargeListView(f) => Type::list(Type::from_arrow(f.data_type())?),
-            DataType::Decimal32(..)
-            | DataType::Decimal64(..)
-            | DataType::Decimal128(..)
-            | DataType::Decimal256(..) => {
-                return Err(
-                    "decimal columns can be exposed but not read by rules in parcel v0 \
-                            (the reference CEL interpreter has no exact decimal type)"
-                        .into(),
-                );
+            DataType::Decimal32(p, s)
+            | DataType::Decimal64(p, s)
+            | DataType::Decimal128(p, s)
+            | DataType::Decimal256(p, s) => {
+                if *p > DECIMAL_PRECISION || *s < 0 {
+                    return Err(format!(
+                        "decimal({p},{s}) is wider than rules can read exactly; rules read decimals of up to \
+                         {DECIMAL_PRECISION} digits with a non-negative scale"
+                    ));
+                }
+                Type::Decimal(*s)
             }
             DataType::Dictionary(_, value) => Type::from_arrow(value)?,
             other => {
@@ -118,6 +128,7 @@ impl fmt::Display for Type {
             Type::Timestamp => f.write_str("timestamp"),
             Type::Duration => f.write_str("duration"),
             Type::List(e) => write!(f, "list<{e}>"),
+            Type::Decimal(sc) => write!(f, "decimal({DECIMAL_PRECISION},{sc})"),
         }
     }
 }
@@ -203,7 +214,7 @@ pub fn exposable_as(raw: &DataType, declared: &DataType) -> bool {
         return true;
     }
     match (raw, declared) {
-        (DataType::Decimal128(..), DataType::Decimal128(..)) => false,
+        (DataType::Decimal128(_, a), DataType::Decimal128(_, b)) => a == b,
         (DataType::Timestamp(..), DataType::Timestamp(..)) => true,
         _ => {
             matches!((Type::from_arrow(raw), Type::from_arrow(declared)), (Ok(a), Ok(b)) if a == b)
@@ -232,7 +243,11 @@ mod tests {
 
     #[test]
     fn decimals_are_passthrough_only() {
-        assert!(Type::from_arrow(&DataType::Decimal128(18, 2)).is_err());
+        assert_eq!(
+            Type::from_arrow(&DataType::Decimal128(18, 2)).unwrap(),
+            Type::Decimal(2)
+        );
+        assert!(Type::from_arrow(&DataType::Decimal128(38, 2)).is_err());
         assert!(exposable_as(
             &DataType::Decimal128(18, 2),
             &DataType::Decimal128(18, 2)

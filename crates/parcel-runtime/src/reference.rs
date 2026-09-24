@@ -64,6 +64,7 @@ pub fn json_value(j: &serde_json::Value, ty: &Type) -> Option<Value> {
                 .map(|x| json_value(x, elem))
                 .collect::<Option<Vec<_>>>()?,
         )),
+        Type::Decimal(s) => Value::Int((j.as_f64()? * 10f64.powi(*s as i32)).round() as i64),
         Type::Bytes | Type::Duration => return None,
     })
 }
@@ -231,6 +232,9 @@ pub fn to_scalar(v: &Value, ty: &Type) -> Result<ScalarValue, String> {
         (Type::Timestamp, Value::Timestamp(t)) => {
             ScalarValue::TimestampMicrosecond(Some(t.timestamp_micros()), Some("UTC".into()))
         }
+        (Type::Decimal(s), Value::Int(v)) => {
+            ScalarValue::Decimal128(Some(*v as i128), parcel_core::types::DECIMAL_PRECISION, *s)
+        }
         (Type::Duration, Value::Duration(d)) => {
             ScalarValue::DurationMicrosecond(d.num_microseconds())
         }
@@ -287,6 +291,10 @@ pub fn from_scalar(s: &ScalarValue) -> Option<Value> {
             Value::List(Arc::new(out))
         }
         S::Dictionary(_, inner) => return from_scalar(inner),
+        // Decimals reach the interpreter as their exact unscaled integer.
+        S::Decimal128(Some(v), _, _) => Value::Int(i64::try_from(*v).ok()?),
+        S::Decimal64(Some(v), _, _) => Value::Int(*v),
+        S::Decimal32(Some(v), _, _) => Value::Int(*v as i64),
         _ => return None,
     })
 }

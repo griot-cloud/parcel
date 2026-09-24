@@ -143,6 +143,10 @@ impl Translator<'_> {
             }
             ExprKind::Not(x) => not(self.expr(x)?),
             ExprKind::Neg(x) => Expr::Negative(Box::new(self.expr(x)?)),
+            // DataFusion widens decimal results; parcel's type fixes precision 18 at the checked scale.
+            ExprKind::Binary(op, a, b) if matches!(e.ty, Type::Decimal(_)) => {
+                cast(self.binary(*op, a, b)?, e.ty.to_arrow())
+            }
             ExprKind::Binary(op, a, b) => self.binary(*op, a, b)?,
             ExprKind::Cond(c, a, b) => when(self.expr(c)?, self.expr(a)?)
                 .otherwise(self.expr(b)?)
@@ -437,6 +441,11 @@ pub fn lit_value(l: &Lit) -> ScalarValue {
         Lit::Double(d) => ScalarValue::Float64(Some(*d)),
         Lit::String(s) => ScalarValue::Utf8(Some(s.clone())),
         Lit::Bytes(b) => ScalarValue::Binary(Some(b.clone())),
+        Lit::Decimal { unscaled, scale } => ScalarValue::Decimal128(
+            Some(*unscaled as i128),
+            crate::types::DECIMAL_PRECISION,
+            *scale,
+        ),
     }
 }
 

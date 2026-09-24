@@ -121,7 +121,7 @@ peQL, the production query engine, embeds the same artifacts.
 
 parcel accepts a strict subset of CEL. Anything it cannot translate faithfully is rejected at check time with a reason; nothing is silently degraded.
 
-- **Types:** bool, int, uint, double, string, bytes, timestamp, duration, and lists.
+- **Types:** bool, int, uint, double, string, bytes, timestamp, duration, lists, and exact decimals (up to 18 digits; no division, one scale per comparison).
 - **Operators:** comparison, arithmetic, logical and ternary operators, and `in`.
 - **String methods:** `startsWith`, `endsWith`, `contains`, `matches` (literal pattern), `size`.
 - **Conversions:** `int`, `uint`, `double`, `string`, `timestamp`, `duration`.

@@ -28,7 +28,7 @@ pub fn print(e: &TExpr, style: Style) -> String {
 fn write_expr(e: &TExpr, style: Style, o: &mut String) {
     let p = |x: &TExpr, o: &mut String| write_expr(x, style, o);
     match &e.kind {
-        ExprKind::Lit(l) => write_lit(l, o),
+        ExprKind::Lit(l) => write_lit(l, style, o),
         ExprKind::Var(v) => o.push_str(&var_path(v)),
         ExprKind::Local(v) => o.push_str(v),
         ExprKind::List(xs) => {
@@ -123,6 +123,29 @@ fn write_expr(e: &TExpr, style: Style, o: &mut String) {
                 Builtin::EndsWith => method("endsWith", o),
                 Builtin::Contains => method("contains", o),
                 Builtin::Matches => method("matches", o),
+                // The reference interpreter holds a decimal as its unscaled integer.
+                Builtin::ToInt
+                    if style == Style::Reference
+                        && matches!(args[0].ty, crate::types::Type::Decimal(_)) =>
+                {
+                    let crate::types::Type::Decimal(s) = args[0].ty else {
+                        unreachable!()
+                    };
+                    o.push('(');
+                    p(&args[0], o);
+                    let _ = write!(o, " / {})", 10i64.pow(s as u32));
+                }
+                Builtin::ToDouble
+                    if style == Style::Reference
+                        && matches!(args[0].ty, crate::types::Type::Decimal(_)) =>
+                {
+                    let crate::types::Type::Decimal(s) = args[0].ty else {
+                        unreachable!()
+                    };
+                    o.push_str("(double(");
+                    p(&args[0], o);
+                    let _ = write!(o, ") / {:?})", 10f64.powi(s as i32));
+                }
                 Builtin::ToInt => global("int", o),
                 Builtin::ToUint => global("uint", o),
                 Builtin::ToDouble => global("double", o),
@@ -202,8 +225,16 @@ pub fn stat_name(s: ColumnStat) -> &'static str {
     }
 }
 
-fn write_lit(l: &Lit, o: &mut String) {
+fn write_lit(l: &Lit, style: Style, o: &mut String) {
     match l {
+        // The reference interpreter works on unscaled integers; people read the decimal.
+        Lit::Decimal { unscaled, scale } => {
+            if style == Style::Reference {
+                let _ = write!(o, "{unscaled}");
+            } else {
+                o.push_str(&decimal_text(*unscaled, *scale));
+            }
+        }
         Lit::Bool(b) => o.push_str(if *b { "true" } else { "false" }),
         Lit::Int(i) => {
             // i64::MIN has no positive literal; CEL parses `-9223372036854775808` as one token.
@@ -244,4 +275,21 @@ fn write_lit(l: &Lit, o: &mut String) {
             o.push('"');
         }
     }
+}
+
+/// `10050` at scale 2 → `100.50`.
+pub fn decimal_text(unscaled: i64, scale: i8) -> String {
+    if scale <= 0 {
+        return unscaled.to_string();
+    }
+    let neg = unscaled < 0;
+    let digits = unscaled.unsigned_abs().to_string();
+    let s = scale as usize;
+    let padded = if digits.len() <= s {
+        format!("{}{digits}", "0".repeat(s + 1 - digits.len()))
+    } else {
+        digits
+    };
+    let (int, frac) = padded.split_at(padded.len() - s);
+    format!("{}{int}.{frac}", if neg { "-" } else { "" })
 }

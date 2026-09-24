@@ -141,8 +141,8 @@ fn rejections() {
             UnknownField,
         ),
         (
-            r#"{id: a, op: admit, expr: "row.amount > 0"}"#,
-            UnreadableColumn,
+            r#"{id: a, op: admit, expr: "row.amount / 2 > 0.00"}"#,
+            OutsideProfile,
         ),
         (
             r#"{id: a, op: admit, expr: "row.other.risk == 'x'"}"#,

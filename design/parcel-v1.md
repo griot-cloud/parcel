@@ -13,7 +13,7 @@ v0 works end to end. This is the deferred list from `parcel-v0.md`, plus gaps fo
 | 7 ✅ | WebAssembly user functions (design 7.4) | `parcel-udf` macro and ABI (arrow-udf convention). Registration verifies exports, imports and a smoke batch. `parcel-runtime` loads modules with wasmtime under fuel and memory limits, as a DataFusion UDF and a CEL function. The registry is a store keyed by tenant and hash. | A tenant function compiled to wasm32 is registered, pinned, and used in an assert. The differential test passes. |
 | 8 ✅ | Substrait output of the validation plan | datafusion-substrait. Constructs it cannot express are listed. | A round trip through Substrait keeps the verdict for the quickstart. |
 | 9 ✅ | ODCS import | `parcel import odcs`: schema properties to expose, `required` to `has()` asserts, quality rules where they map. | The ODCS v3 example imports and compiles. |
-| 10 | Decimals in rules | A reference evaluator that handles exact decimals, then checker and translator support. | Decimal comparisons and arithmetic pass the differential test. |
+| 10 ✅ | Decimals in rules | A reference evaluator that handles exact decimals, then checker and translator support. | Decimal comparisons and arithmetic pass the differential test. |
 
 Out of scope for v1: Python bindings (packaging work, not compiler work), federated execution (peQL), and certificate issuance (Griot product).
 
@@ -37,3 +37,18 @@ Out of scope for v1: Python bindings (packaging work, not compiler work), federa
   - quality rules with `engine: parcel`, whose `implementation` carries parcel rules verbatim
 
   Everything else (library, SQL and text quality rules, servers, SLAs, classification) is reported as a note, never guessed. Tested against a fixture shaped like the standard's own examples; check it against the ODCS version you use.
+- **10** makes decimals exact on both engines rather than extending the CEL interpreter.
+  - **Types:** a decimal is `Type::Decimal(scale)` with precision fixed at 18, so its unscaled value fits an i64. The reference interpreter holds decimals as unscaled integers; DataFusion uses `Decimal128(18, scale)`.
+  - **Allowed:** comparisons and `+`/`-` at one scale; `*` by an int, a decimal, or a literal (scales add); `in` over literals; `double()` and `int()`; `sum`, `avg`, `min` and `max` in `dataset_other` and statistics.
+  - **Literals:** converted at check time and refused if not exact at the scale, e.g. `1.005` against a scale-2 column.
+  - **Refused:** division (not exact) and mixed scales, with a message saying what to do instead.
+  - **Storage:** statistics hold decimals as exact text.
+  - **Evidence:** a differential test over 13 decimal rules, each splitting its rows, agrees for every row and caller. Covered: negatives, truncation, products with ints and decimals, a VAT multiplier, and nulls.
+
+## After v1
+
+What remains is outside parcel's compiler:
+- Python bindings (packaging)
+- federated execution (peQL)
+- certificate issuance (Griot)
+- the `arrow-udf` ABI, if the ecosystem settles on it

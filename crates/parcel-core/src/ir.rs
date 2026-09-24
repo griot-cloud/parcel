@@ -184,6 +184,11 @@ pub enum Lit {
     Double(f64),
     String(String),
     Bytes(Vec<u8>),
+    /// An exact decimal: `unscaled / 10^scale`.
+    Decimal {
+        unscaled: i64,
+        scale: i8,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]

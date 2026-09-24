@@ -1011,6 +1011,7 @@ fn dataset_value(c: &Compilation, m: &Manifest) -> Value {
 fn json_to_cel(j: &serde_json::Value, ty: &parcel_core::types::Type) -> Option<Value> {
     use parcel_core::types::Type;
     Some(match ty {
+        Type::Decimal(s) => Value::Int(parse_decimal(j.as_str()?, *s)?),
         Type::Int => Value::Int(j.as_i64()?),
         Type::Uint => Value::UInt(j.as_u64()?),
         Type::Double => Value::Float(j.as_f64()?),
@@ -1036,6 +1037,10 @@ fn scalar_i64(s: &ScalarValue) -> Option<i64> {
 fn scalar_json(s: &ScalarValue) -> serde_json::Value {
     use serde_json::json;
     match s {
+        // Decimals are stored as exact text, never as a float.
+        ScalarValue::Decimal128(Some(v), _, scale) => {
+            json!(parcel_core::cel_print::decimal_text(*v as i64, *scale))
+        }
         ScalarValue::Int64(Some(v)) => json!(v),
         ScalarValue::UInt64(Some(v)) => json!(v),
         ScalarValue::Float64(Some(v)) => json!(v),
@@ -1086,4 +1091,19 @@ pub(crate) fn conform_one(b: RecordBatch, schema: &SchemaRef) -> Result<RecordBa
                 .map_err(|e| EngineError::Invalid(e.to_string()))
         }
     }
+}
+
+/// `"100.50"` at scale 2 → 10050, exactly.
+fn parse_decimal(text: &str, scale: i8) -> Option<i64> {
+    let (neg, t) = match text.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, text),
+    };
+    let (int, frac) = t.split_once('.').unwrap_or((t, ""));
+    if frac.len() > scale as usize {
+        return None;
+    }
+    let digits = format!("{int}{frac}{}", "0".repeat(scale as usize - frac.len()));
+    let v: i64 = digits.parse().ok()?;
+    Some(if neg { -v } else { v })
 }

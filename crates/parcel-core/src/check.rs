@@ -723,10 +723,17 @@ fn check_producers(doc: &ContractDoc, env: &Env, d: &mut Vec<Diagnostic>) -> Vec
                 let arg_ty = arg.as_ref().map(|a| a.expr.ty.clone());
                 let result = match (func, &arg_ty) {
                     (Aggregate::Count | Aggregate::CountDistinct, _) => Some(Type::Int),
-                    (Aggregate::Sum, Some(t)) if t.is_numeric() => Some(t.clone()),
-                    (Aggregate::Avg | Aggregate::Median, Some(t)) if t.is_numeric() => {
+                    (Aggregate::Sum, Some(t))
+                        if t.is_numeric() || matches!(t, Type::Decimal(_)) =>
+                    {
+                        Some(t.clone())
+                    }
+                    (Aggregate::Avg, Some(t))
+                        if t.is_numeric() || matches!(t, Type::Decimal(_)) =>
+                    {
                         Some(Type::Double)
                     }
+                    (Aggregate::Median, Some(t)) if t.is_numeric() => Some(Type::Double),
                     (Aggregate::Min | Aggregate::Max, Some(t)) if t.is_ordered() => Some(t.clone()),
                     _ => None,
                 };

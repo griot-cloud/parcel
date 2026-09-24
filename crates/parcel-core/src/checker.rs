@@ -402,7 +402,10 @@ impl Checker<'_, '_> {
             }
             operators::NEGATE => {
                 let x = self.expr(&c.args[0])?;
-                if !matches!(x.ty, Type::Int | Type::Double | Type::Duration) {
+                if !matches!(
+                    x.ty,
+                    Type::Int | Type::Double | Type::Duration | Type::Decimal(_)
+                ) {
                     return self.err(Code::TypeMismatch, format!("cannot negate {}", x.ty));
                 }
                 let ty = x.ty.clone();
@@ -416,6 +419,18 @@ impl Checker<'_, '_> {
                 );
                 let (a, b, d) = (a?, b?, d?);
                 self.expect(&a, &Type::Bool, "condition of `?:`")?;
+                // A literal branch takes the decimal type of the other branch.
+                let (b, d) = match (&b.ty, &d.ty) {
+                    (Type::Decimal(sc), _) if !matches!(d.ty, Type::Decimal(_)) => {
+                        let d2 = decimal_literal(&d, *sc).unwrap_or(d);
+                        (b, d2)
+                    }
+                    (_, Type::Decimal(sc)) if !matches!(b.ty, Type::Decimal(_)) => {
+                        let b2 = decimal_literal(&b, *sc).unwrap_or(b);
+                        (b2, d)
+                    }
+                    _ => (b, d),
+                };
                 if b.ty != d.ty {
                     return self.err(
                         Code::TypeMismatch,
@@ -450,6 +465,9 @@ impl Checker<'_, '_> {
 
     fn binary(&mut self, op: BinOp, a: TExpr, b: TExpr) -> R {
         use Type::*;
+        if matches!(a.ty, Decimal(_)) || matches!(b.ty, Decimal(_)) {
+            return self.decimal_binary(op, a, b);
+        }
         let ty = match op {
             BinOp::And | BinOp::Or => {
                 self.expect(&a, &Bool, "operand of a logical operator")?;
@@ -577,9 +595,13 @@ impl Checker<'_, '_> {
                 }
                 Some((Builtin::Matches, Bool))
             }
-            ("int", false, [Int | Uint | Double | String]) => Some((Builtin::ToInt, Int)),
+            ("int", false, [Int | Uint | Double | String | Decimal(_)]) => {
+                Some((Builtin::ToInt, Int))
+            }
             ("uint", false, [Int | Uint | Double | String]) => Some((Builtin::ToUint, Uint)),
-            ("double", false, [Int | Uint | Double | String]) => Some((Builtin::ToDouble, Double)),
+            ("double", false, [Int | Uint | Double | String | Decimal(_)]) => {
+                Some((Builtin::ToDouble, Double))
+            }
             // Not double, bool, timestamp or duration: CEL and Arrow format those differently.
             ("string", false, [Int | Uint | String]) => Some((Builtin::ToString, String)),
             ("timestamp", false, [String | Timestamp]) => Some((Builtin::ToTimestamp, Timestamp)),
@@ -769,6 +791,170 @@ impl Checker<'_, '_> {
             },
             ty,
         ))
+    }
+}
+
+impl Checker<'_, '_> {
+    /// Decimal arithmetic and comparison, exact on both engines (see `Type::Decimal`).
+    fn decimal_binary(&mut self, op: BinOp, a: TExpr, b: TExpr) -> R {
+        use Type::*;
+        let scale = match (&a.ty, &b.ty) {
+            (Decimal(s), _) | (_, Decimal(s)) => *s,
+            _ => unreachable!(),
+        };
+        // Bring a literal on either side to the decimal scale, exactly or not at all.
+        let convert = |this: &mut Self, e: TExpr| -> Option<TExpr> {
+            if matches!(e.ty, Decimal(_)) {
+                return Some(e);
+            }
+            match decimal_literal(&e, scale) {
+                Some(d) => Some(d),
+                None => {
+                    this.err(
+                        Code::TypeMismatch,
+                        format!(
+                            "{} is not exact at decimal scale {scale}; use a literal with at most {scale} decimal places, or convert with double()",
+                            crate::cel_print::print(&e, crate::cel_print::Style::Canonical)
+                        ),
+                    );
+                    None
+                }
+            }
+        };
+        let ty = match op {
+            BinOp::Eq
+            | BinOp::Ne
+            | BinOp::Lt
+            | BinOp::Le
+            | BinOp::Gt
+            | BinOp::Ge
+            | BinOp::Add
+            | BinOp::Sub => {
+                let (a, b) = (convert(self, a)?, convert(self, b)?);
+                if a.ty != b.ty {
+                    return self.err(
+                        Code::TypeMismatch,
+                        format!(
+                            "{} and {} have different scales; rescale one side first",
+                            a.ty, b.ty
+                        ),
+                    );
+                }
+                let ty = if matches!(op, BinOp::Add | BinOp::Sub) {
+                    a.ty.clone()
+                } else {
+                    Bool
+                };
+                return Some(TExpr::new(
+                    ExprKind::Binary(op, Box::new(a), Box::new(b)),
+                    ty,
+                ));
+            }
+            BinOp::Mul => match (a.ty.clone(), b.ty.clone()) {
+                (Decimal(s), Int) | (Int, Decimal(s)) => Decimal(s),
+                (Decimal(s1), Decimal(s2)) if s1 + s2 <= crate::types::DECIMAL_PRECISION as i8 => {
+                    Decimal(s1 + s2)
+                }
+                (Decimal(s), Double) | (Double, Decimal(s)) => {
+                    // A literal factor such as 1.16 becomes a decimal at its own scale.
+                    let (dec, lit) = if matches!(a.ty, Decimal(_)) {
+                        (a, b)
+                    } else {
+                        (b, a)
+                    };
+                    let Some(l) = exact_decimal(&lit) else {
+                        return self.err(
+                            Code::TypeMismatch,
+                            "multiply a decimal by a literal, an int or another decimal".to_owned(),
+                        );
+                    };
+                    let Lit::Decimal { scale: ls, .. } = l else {
+                        unreachable!()
+                    };
+                    let ty = Decimal(s + ls);
+                    let lit = TExpr::new(ExprKind::Lit(l), Decimal(ls));
+                    return Some(TExpr::new(
+                        ExprKind::Binary(op, Box::new(dec), Box::new(lit)),
+                        ty,
+                    ));
+                }
+                _ => {
+                    return self.err(
+                        Code::TypeMismatch,
+                        format!("cannot multiply {} and {}", a.ty, b.ty),
+                    );
+                }
+            },
+            BinOp::Div | BinOp::Mod => {
+                return self.err(
+                    Code::OutsideProfile,
+                    "decimal division is not exact; compare products instead (a == b * c), or convert with double()".to_owned(),
+                );
+            }
+            BinOp::In => {
+                let ExprKind::List(items) = &b.kind else {
+                    return self.err(
+                        Code::OutsideProfile,
+                        "`in` with a decimal needs a list literal".to_owned(),
+                    );
+                };
+                let mut out = Vec::new();
+                for i in items.clone() {
+                    out.push(convert(self, i)?);
+                }
+                let list = TExpr::new(ExprKind::List(out), Type::list(a.ty.clone()));
+                return Some(TExpr::new(
+                    ExprKind::Binary(op, Box::new(a), Box::new(list)),
+                    Bool,
+                ));
+            }
+            BinOp::And | BinOp::Or => {
+                return self.err(Code::TypeMismatch, "decimals are not bool".to_owned());
+            }
+        };
+        Some(TExpr::new(
+            ExprKind::Binary(op, Box::new(a), Box::new(b)),
+            ty,
+        ))
+    }
+}
+
+/// A numeric literal (or a negated one) as a decimal at `scale`, if it is exact there.
+fn decimal_literal(e: &TExpr, scale: i8) -> Option<TExpr> {
+    let value = match &e.kind {
+        ExprKind::Lit(Lit::Int(i)) => *i as f64,
+        ExprKind::Lit(Lit::Double(d)) => *d,
+        ExprKind::Neg(x) => match &x.kind {
+            ExprKind::Lit(Lit::Int(i)) => -(*i as f64),
+            ExprKind::Lit(Lit::Double(d)) => -*d,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let scaled = value * 10f64.powi(scale as i32);
+    let unscaled = scaled.round();
+    if (scaled - unscaled).abs() > 1e-6 || unscaled.abs() >= 1e18 {
+        return None;
+    }
+    Some(TExpr::new(
+        ExprKind::Lit(Lit::Decimal {
+            unscaled: unscaled as i64,
+            scale,
+        }),
+        Type::Decimal(scale),
+    ))
+}
+
+/// A literal as a decimal at the smallest scale that holds it exactly (1.16 → 116 at scale 2).
+fn exact_decimal(e: &TExpr) -> Option<Lit> {
+    let ExprKind::Lit(Lit::Double(d)) = &e.kind else {
+        return None;
+    };
+    let text = format!("{d}");
+    let scale = text.split_once('.').map(|(_, f)| f.len()).unwrap_or(0) as i8;
+    match decimal_literal(e, scale)?.kind {
+        ExprKind::Lit(l) => Some(l),
+        _ => None,
     }
 }
 

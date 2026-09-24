@@ -508,12 +508,13 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
                 cast(column(&e.name), e.data_type.clone())
             })
         };
+        // A transform yields the parcel type; the view exposes the declared Arrow type.
         let live = match transforms.iter().find(|(col, _)| *col == e.name) {
-            Some((_, t)) => t.clone(),
+            Some((_, t)) => cast(t.clone(), e.data_type.clone()),
             None => raw()?,
         };
         let stored = match transforms_stored.iter().find(|(col, _)| *col == e.name) {
-            Some((_, t)) => t.clone(),
+            Some((_, t)) => cast(t.clone(), e.data_type.clone()),
             None => live.clone(),
         };
         projection.push((e.name.clone(), live));
