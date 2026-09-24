@@ -158,9 +158,9 @@ impl Engine {
                     engine.base.join(p)
                 }
             };
-            match Manifest::load(&root)? {
-                Some(m) if !m.row_schema.is_empty() => {
-                    let schema = crate::manifest::schema_from_defs(&m.row_schema)?;
+            match Manifest::any_schema(&root)? {
+                Some(defs) => {
+                    let schema = crate::manifest::schema_from_defs(&defs)?;
                     engine.register_contract(&source, &schema)?;
                 }
                 _ => pending.push((path, source)),
@@ -213,7 +213,7 @@ impl Engine {
 
     pub fn manifest(&self, name: &str) -> Result<Option<Manifest>> {
         let r = self.get(name)?;
-        Ok(Manifest::load(&self.root(&r.compilation.contract))?)
+        Ok(Manifest::load(&self.root(&r.compilation.contract), name)?)
     }
 
     fn session() -> SessionContext {
@@ -292,6 +292,62 @@ impl Engine {
         let target = format!("{}/", root.canonicalize()?.display());
         df.write_parquet(&target, options, Some(parquet)).await?;
 
+        // The data changed: refresh the verdict of every contract bound to it, the writer's last.
+        let written_at = Utc::now();
+        let root_key = root.canonicalize()?;
+        let others: Vec<String> = self
+            .contracts
+            .values()
+            .map(|r| r.compilation.contract.name.clone())
+            .filter(|n| n != name)
+            .filter(|n| {
+                self.get(n)
+                    .ok()
+                    .and_then(|r| self.root(&r.compilation.contract).canonicalize().ok())
+                    == Some(root_key.clone())
+            })
+            .collect();
+        for other in others {
+            self.refresh(&other, written_at).await?;
+        }
+        let (verdict, manifest) = self.refresh(name, written_at).await?;
+        let files = manifest.files;
+        Ok(WriteReport {
+            rows_written,
+            files: files.len(),
+            verdict,
+        })
+    }
+
+    /// A contract registered over data written under another contract has no manifest yet: make one.
+    pub async fn ensure_manifest(&self, name: &str) -> Result<()> {
+        let r = self.get(name)?;
+        let root = self.root(&r.compilation.contract);
+        if Manifest::load(&root, name)?.is_some() || binding::list_files(&root)?.is_empty() {
+            return Ok(());
+        }
+        let written_at = std::fs::read_dir(root.join(crate::manifest::MANIFEST_DIR))
+            .ok()
+            .and_then(|rd| {
+                rd.filter_map(|e| e.ok()).find_map(|e| {
+                    serde_json::from_str::<Manifest>(&std::fs::read_to_string(e.path()).ok()?).ok()
+                })
+            })
+            .map(|m| m.written_at)
+            .unwrap_or_else(Utc::now);
+        self.refresh(name, written_at).await?;
+        Ok(())
+    }
+
+    /// Validate a contract over its data and save its manifest.
+    pub async fn refresh(
+        &self,
+        name: &str,
+        written_at: chrono::DateTime<Utc>,
+    ) -> Result<(Verdict, Manifest)> {
+        let r = self.get(name)?;
+        let cc = &r.compilation.contract;
+        let root = self.root(cc);
         let verdict = self.validate(name).await?;
         let files = binding::list_files(&root)?;
         let flag_columns: Vec<String> = cc.flags.iter().map(|f| f.column.clone()).collect();
@@ -299,11 +355,11 @@ impl Engine {
             .iter()
             .map(|f| binding::file_entry(&root, f, &flag_columns))
             .collect::<Result<Vec<_>>>()?;
-        Manifest {
+        let manifest = Manifest {
             contract: cc.name.clone(),
             contract_hash: cc.contract_hash.clone(),
             compilation_hash: cc.compilation_hash.clone(),
-            written_at: Utc::now(),
+            written_at,
             row_count: verdict.row_count,
             valid: verdict.valid,
             breached: verdict.breached.clone(),
@@ -311,13 +367,9 @@ impl Engine {
             data_hash: verdict.data_hash.clone(),
             row_schema: crate::manifest::schema_to_defs(&cc.row_schema),
             files: entries,
-        }
-        .save(&root)?;
-        Ok(WriteReport {
-            rows_written,
-            files: files.len(),
-            verdict,
-        })
+        };
+        manifest.save(&root)?;
+        Ok((verdict, manifest))
     }
 
     /// Run the contract's validation plan over its binding and return the verdict (design 9.2).
@@ -415,9 +467,10 @@ impl Engine {
             }
             decisions.push(d.id.clone());
         }
-        let manifest = Manifest::load(&self.root(cc))?.ok_or_else(|| EngineError::NotWritten {
-            contract: cc.name.clone(),
-        })?;
+        let manifest =
+            Manifest::load(&self.root(cc), &cc.name)?.ok_or_else(|| EngineError::NotWritten {
+                contract: cc.name.clone(),
+            })?;
         if !manifest.valid {
             return Err(EngineError::NotServable {
                 contract: cc.name.clone(),
@@ -555,6 +608,7 @@ impl Engine {
             if resolutions.iter().any(|r: &Resolution| r.contract == name) {
                 continue;
             }
+            self.ensure_manifest(&name).await?;
             let (resolution, _) = self.resolve(&name, caller)?;
             let view = self.view(&name, caller, &resolution)?;
             ctx.register_table(t.clone(), Arc::new(ViewTable::new(view, None)))?;
@@ -583,7 +637,15 @@ impl Engine {
             .filter(|s| matches!(s, ShapeOp::Noise { .. }))
             .collect();
         if !noise.is_empty() {
-            plan = shape::apply_noise(plan, &noise, caller, budgets_store, &mut budgets)?;
+            let optimized = ctx.state().optimize(&plan)?;
+            plan = shape::apply_noise(
+                plan,
+                &optimized,
+                &noise,
+                caller,
+                budgets_store,
+                &mut budgets,
+            )?;
         }
         let has_aggregate = shape::has_aggregate(&plan);
         if let (Some(k), true) = (k, has_aggregate) {

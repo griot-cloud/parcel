@@ -9,7 +9,8 @@ use chrono::{DateTime, Utc};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use serde::{Deserialize, Serialize};
 
-pub const MANIFEST_FILE: &str = "_parcel_manifest.json";
+/// Manifests live in this directory under the binding root, one per contract bound to the data.
+pub const MANIFEST_DIR: &str = "_parcel";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -85,8 +86,14 @@ pub fn schema_from_defs(defs: &[ColumnDef]) -> Result<Schema, String> {
 }
 
 impl Manifest {
-    pub fn load(root: &Path) -> std::io::Result<Option<Manifest>> {
-        let p = root.join(MANIFEST_FILE);
+    fn path(root: &Path, contract: &str) -> std::path::PathBuf {
+        root.join(MANIFEST_DIR)
+            .join(format!("{}.json", contract.replace('/', "__")))
+    }
+
+    /// The manifest one contract keeps for the data it binds.
+    pub fn load(root: &Path, contract: &str) -> std::io::Result<Option<Manifest>> {
+        let p = Self::path(root, contract);
         if !p.exists() {
             return Ok(None);
         }
@@ -97,12 +104,35 @@ impl Manifest {
     }
 
     pub fn save(&self, root: &Path) -> std::io::Result<()> {
-        let tmp = root.join(format!("{MANIFEST_FILE}.tmp"));
+        let p = Self::path(root, &self.contract);
+        std::fs::create_dir_all(p.parent().expect("manifest dir"))?;
+        let tmp = p.with_extension("json.tmp");
         std::fs::write(
             &tmp,
             serde_json::to_string_pretty(self).map_err(std::io::Error::other)?,
         )?;
-        std::fs::rename(tmp, root.join(MANIFEST_FILE))
+        std::fs::rename(tmp, p)
+    }
+
+    /// The row schema recorded by any contract's manifest over this data.
+    pub fn any_schema(root: &Path) -> std::io::Result<Option<Vec<ColumnDef>>> {
+        let dir = root.join(MANIFEST_DIR);
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            return Ok(None);
+        };
+        let mut paths: Vec<_> = rd
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|e| e == "json"))
+            .collect();
+        paths.sort();
+        for p in paths {
+            if let Ok(m) = serde_json::from_str::<Manifest>(&std::fs::read_to_string(&p)?)
+                && !m.row_schema.is_empty()
+            {
+                return Ok(Some(m.row_schema));
+            }
+        }
+        Ok(None)
     }
 
     /// True when every file was written under this contract hash, so stored flags can replace live rules.

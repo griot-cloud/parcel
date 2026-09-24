@@ -167,6 +167,7 @@ fn laplace_udf() -> ScalarUDF {
 /// Refuses queries that could reveal the column other than through an aggregate.
 pub fn apply_noise(
     plan: LogicalPlan,
+    optimized: &LogicalPlan,
     shapes: &[&ShapeOp],
     caller: &Caller,
     store: &BudgetStore,
@@ -186,9 +187,27 @@ pub fn apply_noise(
         .collect();
     let reads = |e: &Expr, c: &str| e.column_refs().iter().any(|r| r.name == c);
     if !has_aggregate(&plan) {
+        // Without an aggregate, the query may run only if it never reads a noised column.
+        // The optimised plan's scans list exactly the columns read.
+        let mut read = Vec::new();
+        optimized
+            .apply(|p| {
+                if let LogicalPlan::TableScan(ts) = p {
+                    for (c, ..) in &noised {
+                        if ts.projected_schema.fields().iter().any(|f| f.name() == c) {
+                            read.push(c.to_string());
+                        }
+                    }
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .ok();
+        if read.is_empty() {
+            return Ok(plan);
+        }
         return Err(EngineError::Invalid(format!(
             "`{}` is released to this caller only through aggregates (SUM, AVG, COUNT, ...)",
-            noised.iter().map(|n| n.0).collect::<Vec<_>>().join("`, `")
+            read.join("`, `")
         )));
     }
     let mut touched: Vec<(String, f64)> = Vec::new();
