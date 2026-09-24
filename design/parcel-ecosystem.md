@@ -99,12 +99,16 @@ Open question: whether peQL itself is open. Open peQL makes "query a contract, n
 - **CLI:** `cargo install`, `cargo binstall`, Homebrew, and a container image for CI.
 - **Name check (2026-09-24):** `parcel-core`, `parcel-runtime`, `parcel-cli` and `parcel-udf` are free on crates.io. The bare `parcel` crate is taken. On PyPI and npm, "parcel" is strongly associated with the Parcel JS bundler, so the Python package likely needs a distinct name (e.g. `parcel-contracts`). Reserve the crate names early.
 
-## Order
-
-The adapters follow the core. None is started until v0 is done.
+## Order and status
 
 1. JSON Schema, GitHub Action and pre-commit hook: cheap, and needed by every author.
-2. Python bindings and the Dagster asset check: our own stack uses them.
-3. ValidationPlan as DuckDB and Postgres SQL: makes the checks run anywhere.
+   - **Built:** JSON Schema (`parcel schema`, `schema/contract.schema.json`) and a CI workflow.
+   - **Next:** a reusable `parcel check` GitHub Action and a pre-commit hook.
+2. Python bindings and the Dagster asset check: our own stack uses them. **Next.**
+3. The validation plan as DuckDB and Postgres SQL: makes the checks run anywhere.
+   - **Built:** `parcel compile --sql` for seven dialects, and verified in DuckDB (`examples/verify-duckdb.py`).
+   - **Also built:** Substrait (`--features substrait`).
 4. ODCS import and export: the door into organisations with existing contracts.
-5. dbt adapter, RLS exporters and catalogue publishing.
+   - **Built:** import (`parcel import odcs`).
+   - **Next:** export.
+5. dbt adapter, RLS exporters and catalogue publishing. **Later.**
