@@ -63,6 +63,25 @@ pub struct Flag {
     pub on_fail: AssertOnFail,
 }
 
+/// A rule evaluated per row, in reference CEL: what the differential test compares against.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RowRule {
+    pub id: String,
+    pub kind: RowRuleKind,
+    pub cel: String,
+    /// Row columns read by value; a null in any of them decides the result (design 6, "Nulls").
+    pub reads: Vec<String>,
+    pub ty: Type,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowRuleKind {
+    Admit,
+    Assert,
+    Transform { column: String },
+}
+
 /// How a rule will execute, shown to the author (design 9.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -117,6 +136,8 @@ pub struct CompiledContract {
     pub shapes: Vec<ShapeRule>,
     pub functions: BTreeSet<FunctionPin>,
     pub report: Vec<ReportEntry>,
+    /// Every admit, assert and transform in reference CEL, for the differential test.
+    pub row_rules: Vec<RowRule>,
 }
 
 /// A statistic the validation plan computes: one `dataset` field.
@@ -193,8 +214,32 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
     let mut guarantees = Vec::new();
     let mut shapes = Vec::new();
     let mut report = Vec::new();
+    let mut row_rules = Vec::new();
 
     for rule in &c.rules {
+        let row_kind = match rule {
+            CheckedRule::Admit { .. } => Some(RowRuleKind::Admit),
+            CheckedRule::Assert { .. } => Some(RowRuleKind::Assert),
+            CheckedRule::Transform { column, .. } => Some(RowRuleKind::Transform {
+                column: column.clone(),
+            }),
+            _ => None,
+        };
+        if let (Some(kind), Some(x)) = (row_kind, rule.exprs().first()) {
+            let mut reads = BTreeSet::new();
+            x.expr.walk(&mut |n| {
+                if let ExprKind::Var(Var::Row(c)) = &n.kind {
+                    reads.insert(c.clone());
+                }
+            });
+            row_rules.push(RowRule {
+                id: rule.id().to_owned(),
+                kind,
+                cel: print(&x.expr, Style::Reference),
+                reads: reads.into_iter().collect(),
+                ty: x.expr.ty.clone(),
+            });
+        }
         let id = rule.id().to_owned();
         let at = |e: String| (Some(id.clone()), e);
         let canonical = rule
@@ -384,6 +429,7 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
             shapes,
             functions: c.functions.clone(),
             report,
+            row_rules,
         },
         validation,
         write,
@@ -662,6 +708,12 @@ fn validation_plan(
         data_guarantees,
         query_time_guarantees,
     })
+}
+
+/// Bind lambda variables (from CEL macros) to their element types. Every plan that
+/// embeds parcel expressions must pass through this before execution.
+pub fn resolve(plan: LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
+    Ok(plan.resolve_lambda_variables()?.data)
 }
 
 fn dataset_fields(e: &TExpr) -> Vec<DatasetField> {

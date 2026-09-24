@@ -247,7 +247,7 @@ impl Translator<'_> {
         Ok(match b {
             Builtin::Size => match &args[0].ty {
                 Type::String => cast(f::character_length(next()), DataType::Int64),
-                Type::Bytes => cast(f::octet_length(next()), DataType::Int64),
+                Type::Bytes => bytes_len_udf().call(vec![next()]),
                 _ => cast(nested::cardinality(next()), DataType::Int64),
             },
             Builtin::StartsWith => f::starts_with(next(), next()),
@@ -310,6 +310,47 @@ pub fn stat_column(d: &DatasetField) -> String {
         DatasetField::AssertionPassRate { assertion } => {
             format!("assertions__{assertion}__pass_rate")
         }
+    }
+}
+
+/// `parcel_bytes_len(binary) -> int64`: DataFusion's `octet_length` takes strings only.
+pub fn bytes_len_udf() -> datafusion_expr::ScalarUDF {
+    datafusion_expr::ScalarUDF::new_from_impl(BytesLen {
+        signature: datafusion_expr::Signature::exact(
+            vec![DataType::Binary],
+            datafusion_expr::Volatility::Immutable,
+        ),
+    })
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct BytesLen {
+    signature: datafusion_expr::Signature,
+}
+
+impl datafusion_expr::ScalarUDFImpl for BytesLen {
+    fn name(&self) -> &str {
+        "parcel_bytes_len"
+    }
+    fn signature(&self) -> &datafusion_expr::Signature {
+        &self.signature
+    }
+    fn return_type(&self, _: &[DataType]) -> datafusion_common::Result<DataType> {
+        Ok(DataType::Int64)
+    }
+    fn invoke_with_args(
+        &self,
+        args: datafusion_expr::ScalarFunctionArgs,
+    ) -> datafusion_common::Result<datafusion_expr::ColumnarValue> {
+        use datafusion_common::arrow::array::{Array, BinaryArray, Int64Array};
+        let arr = args.args[0].to_array(args.number_rows)?;
+        let bin = arr.as_any().downcast_ref::<BinaryArray>().ok_or_else(|| {
+            datafusion_common::DataFusionError::Internal("parcel_bytes_len expects binary".into())
+        })?;
+        let out: Int64Array = (0..bin.len())
+            .map(|i| (!bin.is_null(i)).then(|| bin.value(i).len() as i64))
+            .collect();
+        Ok(datafusion_expr::ColumnarValue::Array(Arc::new(out)))
     }
 }
 
