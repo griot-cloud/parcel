@@ -12,6 +12,13 @@
       "format": "uint32",
       "minimum": 0
     },
+    "owner": {
+      "description": "The tenant that owns the contract: its registered functions are callable here.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "inherits": {
       "type": [
         "string",

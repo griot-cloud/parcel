@@ -140,6 +140,7 @@ fn resolve_inner(
     let flat = ContractDoc {
         contract: doc.contract.clone(),
         version: doc.version,
+        owner: doc.owner.clone().or_else(|| p.owner.clone()),
         inherits: None,
         binding,
         expose: Some(expose),

@@ -9,8 +9,8 @@ use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::{CsvReadOptions, ParquetReadOptions, SessionContext};
+use parcel_core::ContractDoc;
 use parcel_core::compile::{ReportEntry, Tier};
-use parcel_core::{ContractDoc, Registry};
 use parcel_engine::differential::differential;
 use parcel_engine::{Caller, Engine, EngineError, WriteMode};
 
@@ -48,6 +48,8 @@ enum Command {
         table: String,
         #[command(flatten)]
         types: TypeHints,
+        #[command(flatten)]
+        ws: Workspace,
     },
     /// Check a contract against a sample of its data: pass rates, selectivity, verdict,
     /// and the differential test between the CEL interpreter and DataFusion.
@@ -64,6 +66,8 @@ enum Command {
         sample: usize,
         #[command(flatten)]
         types: TypeHints,
+        #[command(flatten)]
+        ws: Workspace,
     },
     /// Write data under a contract: flags, layout, manifest and verdict.
     Write {
@@ -111,6 +115,11 @@ enum Command {
     },
     /// Print the JSON Schema of contract documents (for editors and CI).
     Schema,
+    /// Tenants' WebAssembly functions.
+    Function {
+        #[command(subcommand)]
+        action: FunctionCommand,
+    },
     /// List the contracts in a workspace and the state of their data.
     List {
         #[command(flatten)]
@@ -140,6 +149,28 @@ impl TypeHints {
             })
             .collect()
     }
+}
+
+#[derive(Subcommand)]
+enum FunctionCommand {
+    /// Verify a module and register one of its functions for a tenant's contracts.
+    Register {
+        /// The compiled module (.wasm), built with parcel_udf::export!.
+        module: PathBuf,
+        /// The function's manifest (YAML): name, version, signatures, deterministic, cost.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// The tenant whose contracts may call it.
+        #[arg(long)]
+        owner: String,
+        #[command(flatten)]
+        ws: Workspace,
+    },
+    /// List the functions registered in a workspace.
+    List {
+        #[command(flatten)]
+        ws: Workspace,
+    },
 }
 
 #[derive(Args)]
@@ -231,9 +262,19 @@ async fn run(cmd: Command) -> R {
             sql,
             table,
             types,
+            ws,
         } => {
             let sql = sql.as_deref().map(|d| (d, table.as_str()));
-            cmd_compile(&contract, &schema, out.as_deref(), json, sql, &types).await
+            cmd_compile(
+                &contract,
+                &schema,
+                out.as_deref(),
+                json,
+                sql,
+                &types,
+                &ws.root,
+            )
+            .await
         }
         Command::Check {
             contract,
@@ -241,7 +282,8 @@ async fn run(cmd: Command) -> R {
             callers,
             sample,
             types,
-        } => cmd_check(&contract, &data, &callers, sample, &types).await,
+            ws,
+        } => cmd_check(&contract, &data, &callers, sample, &types, &ws.root).await,
         Command::Write {
             contract,
             input,
@@ -327,6 +369,57 @@ async fn run(cmd: Command) -> R {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Command::Function { action } => match action {
+            FunctionCommand::Register {
+                module,
+                manifest,
+                owner,
+                ws,
+            } => {
+                let (mut engine, _) = Engine::open(&ws.root).map_err(|e| e.to_string())?;
+                let bytes =
+                    std::fs::read(&module).map_err(|e| format!("{}: {e}", module.display()))?;
+                let text = std::fs::read_to_string(&manifest)
+                    .map_err(|e| format!("{}: {e}", manifest.display()))?;
+                let m: parcel_core::registry::FunctionManifest = yaml_serde::from_str(&text)
+                    .map_err(|e| format!("{}: {e}", manifest.display()))?;
+                let entry = engine
+                    .register_function(&bytes, &m, &owner)
+                    .map_err(|e| e.to_string())?;
+                println!(
+                    "registered {} v{} for {owner} ({})",
+                    entry.name,
+                    entry.version,
+                    &entry.hash[..16]
+                );
+                Ok(ExitCode::SUCCESS)
+            }
+            FunctionCommand::List { ws } => {
+                let (engine, _) = Engine::open(&ws.root).map_err(|e| e.to_string())?;
+                for f in engine.functions() {
+                    let sig = f.signatures.first().map(|s| {
+                        format!(
+                            "({}) -> {}",
+                            s.args
+                                .iter()
+                                .map(|t| t.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            s.ret
+                        )
+                    });
+                    println!(
+                        "{:<20} v{:<3} {:<32} owner {:<12} {}",
+                        f.name,
+                        f.version,
+                        sig.unwrap_or_default(),
+                        f.owner,
+                        &f.hash[..16]
+                    );
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+        },
         Command::Schema => {
             let schema = parcel_core::document::json_schema();
             println!(
@@ -459,15 +552,20 @@ async fn cmd_compile(
     json: bool,
     sql: Option<(&str, &str)>,
     types: &TypeHints,
+    root: &Path,
 ) -> R {
     let source =
         std::fs::read_to_string(contract).map_err(|e| format!("{}: {e}", contract.display()))?;
     let (schema, _) = read_schema_only(schema_from, types).await?;
     let doc = ContractDoc::parse(&source).map_err(|d| d.to_string())?;
-    let docs = sibling_documents(contract, None);
-    let c = match parcel_core::compile_with(&doc, &schema, &Registry::builtin(), &|n| {
-        docs.get(n).cloned()
-    }) {
+    let docs = sibling_documents(contract, Some(root));
+    // The workspace's functions: a contract may call its owner's.
+    let (mut engine, _) = Engine::open(root).map_err(|e| e.to_string())?;
+    for d in docs.values() {
+        engine.add_document(d.clone());
+    }
+    let registry = engine.registry_for(&doc);
+    let c = match parcel_core::compile_with(&doc, &schema, &registry, &|n| docs.get(n).cloned()) {
         Ok(c) => c,
         Err(diags) => {
             for d in diags {
@@ -502,8 +600,11 @@ async fn cmd_compile(
         );
     }
     if let Some(out) = out {
-        let bundle = parcel_engine::bundle::Bundle::new(&doc, &ancestors, &schema, &c)
+        let _ = &ancestors;
+        engine
+            .register_contract(&source, &schema)
             .map_err(|e| e.to_string())?;
+        let bundle = engine.bundle(&doc.contract).map_err(|e| e.to_string())?;
         std::fs::write(out, bundle.to_json().map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
         eprintln!("wrote {}", out.display());
@@ -542,6 +643,7 @@ async fn cmd_check(
     callers: &[PathBuf],
     sample: usize,
     types: &TypeHints,
+    root: &Path,
 ) -> R {
     let source =
         std::fs::read_to_string(contract).map_err(|e| format!("{}: {e}", contract.display()))?;
@@ -556,18 +658,25 @@ async fn cmd_check(
             b.parquet = "data/".into();
         }
     }
-    let c =
-        match parcel_core::compile_with(&docs[&doc.contract], &schema, &Registry::builtin(), &|n| {
-            docs.get(n).cloned()
-        }) {
-            Ok(c) => c,
-            Err(diags) => {
-                for d in diags {
-                    eprintln!("{d}");
-                }
-                return Ok(ExitCode::from(1));
+    let (workspace, _) = Engine::open(root).map_err(|e| e.to_string())?;
+    let registry = {
+        let mut w = workspace;
+        for d in docs.values() {
+            w.add_document(d.clone());
+        }
+        (w.registry_for(&doc), w.functions())
+    };
+    let c = match parcel_core::compile_with(&docs[&doc.contract], &schema, &registry.0, &|n| {
+        docs.get(n).cloned()
+    }) {
+        Ok(c) => c,
+        Err(diags) => {
+            for d in diags {
+                eprintln!("{d}");
             }
-        };
+            return Ok(ExitCode::from(1));
+        }
+    };
     print_report(
         &c.contract.name,
         c.contract.version,
@@ -579,6 +688,7 @@ async fn cmd_check(
     let scratch = std::env::temp_dir().join(format!("parcel-check-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     let mut engine = Engine::new(&scratch);
+    engine.adopt_functions(registry.1.clone());
     for d in docs.values() {
         engine.add_document(d.clone());
     }

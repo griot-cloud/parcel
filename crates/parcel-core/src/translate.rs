@@ -151,11 +151,15 @@ impl Translator<'_> {
             ExprKind::HasOther(f) => is_not_null(other_field(f)),
             ExprKind::Builtin(b, args) => self.builtin(*b, args)?,
             ExprKind::Call(pin, args) => {
+                let types: Vec<DataType> = args.iter().map(|a| a.ty.to_arrow()).collect();
                 let args = args
                     .iter()
                     .map(|a| self.expr(a))
                     .collect::<Result<Vec<_>, _>>()?;
-                builtin_function(&pin.name, args)?
+                match crate::registry::Registry::builtin().get(&pin.name) {
+                    Some(b) if b.hash == pin.hash => builtin_function(&pin.name, args)?,
+                    _ => user_function_udf(pin, types, e.ty.to_arrow()).call(args),
+                }
             }
             ExprKind::Macro {
                 kind,
@@ -324,6 +328,60 @@ pub fn stat_column(d: &DatasetField) -> String {
 /// `row.other.<field>`: a field of the `_other` struct column.
 pub fn other_field(field: &str) -> Expr {
     datafusion_functions::core::expr_fn::get_field(column(crate::ir::OTHER_COLUMN), field)
+}
+
+/// A call to a pinned user function. It executes whatever implementation the runtime provided
+/// for the pin's hash; with none loaded, the query fails rather than guessing.
+pub fn user_function_udf(
+    pin: &crate::registry::FunctionPin,
+    args: Vec<DataType>,
+    ret: DataType,
+) -> datafusion_expr::ScalarUDF {
+    datafusion_expr::ScalarUDF::new_from_impl(UserFunction {
+        pin: pin.clone(),
+        signature: datafusion_expr::Signature::exact(args, datafusion_expr::Volatility::Immutable),
+        ret,
+    })
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct UserFunction {
+    pin: crate::registry::FunctionPin,
+    signature: datafusion_expr::Signature,
+    ret: DataType,
+}
+
+impl datafusion_expr::ScalarUDFImpl for UserFunction {
+    fn name(&self) -> &str {
+        &self.pin.name
+    }
+    fn signature(&self) -> &datafusion_expr::Signature {
+        &self.signature
+    }
+    fn return_type(&self, _: &[DataType]) -> datafusion_common::Result<DataType> {
+        Ok(self.ret.clone())
+    }
+    fn invoke_with_args(
+        &self,
+        args: datafusion_expr::ScalarFunctionArgs,
+    ) -> datafusion_common::Result<datafusion_expr::ColumnarValue> {
+        let imp = crate::registry::implementation(&self.pin.hash).ok_or_else(|| {
+            datafusion_common::DataFusionError::Execution(format!(
+                "function `{}` v{} ({}) is not loaded in this runtime",
+                self.pin.name,
+                self.pin.version,
+                &self.pin.hash[..12]
+            ))
+        })?;
+        let arrays = args
+            .args
+            .iter()
+            .map(|a| a.to_array(args.number_rows))
+            .collect::<datafusion_common::Result<Vec<_>>>()?;
+        let out = imp(&arrays, args.number_rows)
+            .map_err(datafusion_common::DataFusionError::Execution)?;
+        Ok(datafusion_expr::ColumnarValue::Array(out))
+    }
 }
 
 /// `parcel_bytes_len(binary) -> int64`: DataFusion's `octet_length` takes strings only.

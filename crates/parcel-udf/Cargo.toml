@@ -1,0 +1,11 @@
+[package]
+name = "parcel-udf"
+description = "Write parcel user-defined functions in Rust, compiled to WebAssembly"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# No dependencies: a function module should be a few kilobytes and import nothing.
+[dependencies]

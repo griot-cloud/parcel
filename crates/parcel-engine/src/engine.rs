@@ -29,6 +29,16 @@ use crate::error::{EngineError, Result};
 use crate::manifest::Manifest;
 use crate::shape;
 
+/// Where a workspace keeps tenants' function modules.
+pub const FUNCTIONS_DIR: &str = "_functions";
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct StoredFunction {
+    owner: String,
+    manifest: parcel_core::registry::FunctionManifest,
+    hash: String,
+}
+
 /// A registered contract: its document and the three compiled artifacts.
 #[derive(Clone, Debug)]
 pub struct Registered {
@@ -149,6 +159,7 @@ impl Engine {
     /// is recompiled against the schema its manifest recorded. The others are returned as pending.
     pub fn open(base: impl Into<PathBuf>) -> Result<(Engine, Vec<(PathBuf, String)>)> {
         let mut engine = Engine::new(base);
+        engine.load_functions()?;
         let mut pending = Vec::new();
         let dir = engine.base.join("contracts");
         let mut paths: Vec<PathBuf> = match std::fs::read_dir(&dir) {
@@ -195,6 +206,138 @@ impl Engine {
         Ok((engine, pending))
     }
 
+    /// Register a tenant's WebAssembly function: verify it, load it, and store it in the workspace.
+    /// Contracts whose `owner` is `owner` may then call it by name.
+    pub fn register_function(
+        &mut self,
+        module: &[u8],
+        manifest: &parcel_core::registry::FunctionManifest,
+        owner: &str,
+    ) -> Result<parcel_core::registry::FunctionEntry> {
+        if let Some(existing) = self.registry.get(&manifest.name)
+            && existing.owner != owner
+        {
+            return Err(EngineError::Invalid(format!(
+                "`{}` is already registered by `{}`",
+                manifest.name, existing.owner
+            )));
+        }
+        let entry = parcel_runtime::wasm::install(module, manifest, owner)?;
+        let dir = self.base.join(FUNCTIONS_DIR).join(owner);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(format!("{}.wasm", manifest.name)), module)?;
+        let record = StoredFunction {
+            owner: owner.to_owned(),
+            manifest: manifest.clone(),
+            hash: entry.hash.clone(),
+        };
+        std::fs::write(
+            dir.join(format!("{}.json", manifest.name)),
+            serde_json::to_string_pretty(&record)
+                .map_err(|e| EngineError::Invalid(e.to_string()))?,
+        )?;
+        self.registry.insert(entry.clone());
+        Ok(entry)
+    }
+
+    /// Make functions already loaded in this process callable here (e.g. from another workspace).
+    pub fn adopt_functions(&mut self, entries: Vec<parcel_core::registry::FunctionEntry>) {
+        for e in entries {
+            self.registry.insert(e);
+        }
+    }
+
+    /// Every user function registered in this engine.
+    pub fn functions(&self) -> Vec<parcel_core::registry::FunctionEntry> {
+        self.registry
+            .entries()
+            .filter(|e| !e.is_builtin())
+            .cloned()
+            .collect()
+    }
+
+    fn load_functions(&mut self) -> Result<()> {
+        let dir = self.base.join(FUNCTIONS_DIR);
+        let Ok(owners) = std::fs::read_dir(&dir) else {
+            return Ok(());
+        };
+        for owner in owners.flatten() {
+            for f in std::fs::read_dir(owner.path())?.flatten() {
+                let p = f.path();
+                if p.extension().is_some_and(|e| e == "json") {
+                    let rec: StoredFunction =
+                        serde_json::from_str(&std::fs::read_to_string(&p)?)
+                            .map_err(|e| EngineError::Invalid(format!("{}: {e}", p.display())))?;
+                    let module = std::fs::read(p.with_extension("wasm"))?;
+                    let entry = parcel_runtime::wasm::install(&module, &rec.manifest, &rec.owner)?;
+                    if entry.hash != rec.hash {
+                        return Err(EngineError::Invalid(format!(
+                            "{}: the stored module no longer matches its hash",
+                            p.display()
+                        )));
+                    }
+                    self.registry.insert(entry);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The functions a contract may call: the built-ins and its owner's.
+    pub fn registry_for(&self, doc: &ContractDoc) -> Registry {
+        self.registry.visible_to(self.owner_of(doc).as_deref())
+    }
+
+    /// A registered contract as a portable bundle, with the function modules it is pinned to.
+    pub fn bundle(&self, name: &str) -> Result<crate::bundle::Bundle> {
+        let r = self.get(name)?;
+        let cc = &r.compilation.contract;
+        let mut functions = Vec::new();
+        for pin in &cc.functions {
+            let Some(entry) = self
+                .registry
+                .entries()
+                .find(|e| e.hash == pin.hash && !e.is_builtin())
+            else {
+                continue;
+            };
+            let dir = self.base.join(FUNCTIONS_DIR).join(&entry.owner);
+            let rec: StoredFunction = serde_json::from_str(&std::fs::read_to_string(
+                dir.join(format!("{}.json", entry.name)),
+            )?)
+            .map_err(|e| EngineError::Invalid(e.to_string()))?;
+            let module = std::fs::read(dir.join(format!("{}.wasm", entry.name)))?;
+            functions.push(crate::bundle::BundledFunction {
+                owner: rec.owner,
+                manifest: rec.manifest,
+                module: hex::encode(module),
+            });
+        }
+        crate::bundle::Bundle::with_functions(
+            &r.doc,
+            &r.ancestors,
+            &cc.row_schema,
+            &r.compilation,
+            functions,
+        )
+        .map_err(EngineError::from)
+    }
+
+    /// The tenant a contract belongs to, following its inheritance chain.
+    pub fn owner_of(&self, doc: &ContractDoc) -> Option<String> {
+        let mut d = Some(doc.clone());
+        while let Some(x) = d {
+            if x.owner.is_some() {
+                return x.owner;
+            }
+            d = x
+                .inherits
+                .as_ref()
+                .and_then(|p| self.documents.get(p).cloned());
+        }
+        None
+    }
+
     /// Make a contract document known without compiling it, so others can inherit from it.
     pub fn add_document(&mut self, doc: ContractDoc) {
         self.documents.insert(doc.contract.clone(), doc);
@@ -227,8 +370,9 @@ impl Engine {
         let doc = ContractDoc::parse(source).map_err(|d| EngineError::Compile(vec![d]))?;
         self.add_document(doc.clone());
         let docs = &self.documents;
+        let visible = self.registry.visible_to(self.owner_of(&doc).as_deref());
         let compilation =
-            parcel_core::compile_with(&doc, schema, &self.registry, &|n| docs.get(n).cloned())
+            parcel_core::compile_with(&doc, schema, &visible, &|n| docs.get(n).cloned())
                 .map_err(EngineError::Compile)?;
         let mut ancestors = Vec::new();
         let mut next = doc.inherits.clone();
@@ -508,6 +652,7 @@ impl Engine {
         parcel_runtime::verify_pins(&cc.functions)?;
         let ctx_scope = Scope {
             ctx: Some(reference::ctx_value_typed(caller, &cc.ctx_other)),
+            pins: cc.functions.clone(),
             ..Default::default()
         };
         let ctx = reference::context(&ctx_scope);
@@ -536,6 +681,7 @@ impl Engine {
             ctx: ctx_scope.ctx.clone(),
             dataset: Some(dataset),
             row: None,
+            pins: cc.functions.clone(),
         });
         let mut annotations = Vec::new();
         for g in &cc.guarantees {
@@ -645,6 +791,7 @@ impl Engine {
                 caller,
                 &r.compilation.contract.ctx_other,
             )),
+            pins: r.compilation.contract.functions.clone(),
             ..Default::default()
         });
         for d in &r.compilation.contract.decisions {
@@ -829,6 +976,7 @@ pub fn enrich_plan(input: LogicalPlan, cc: &CompiledContract) -> Result<LogicalP
 pub fn param_values(cc: &CompiledContract, caller: &Caller) -> Result<ParamValues> {
     let ctx = reference::context(&Scope {
         ctx: Some(reference::ctx_value_typed(caller, &cc.ctx_other)),
+        pins: cc.functions.clone(),
         ..Default::default()
     });
     let mut map = HashMap::new();

@@ -84,6 +84,25 @@ Other commands:
 - `parcel list` lists the workspace.
 - `parcel compile contract.yaml --schema data.csv -o contract.parcel.json` writes a bundle.
 
+## Your own functions, in WebAssembly
+
+A tenant can extend the rule language with functions written in Rust and compiled to WebAssembly. A module imports nothing, so it has no clock, randomness or I/O. It runs under fuel and memory limits, and parcel verifies it with a smoke batch at registration. Contracts pin a function by hash, so a later version never changes an existing contract. The DataFusion side and the CEL interpreter call the same module, so there is no second implementation to drift.
+
+```rust
+parcel_udf::export! {
+    fn is_meter_serial(s: &str) -> bool {
+        s.len() == 12 && s.starts_with("MK") && s.as_bytes()[2..].iter().all(|b| b.is_ascii_digit())
+    }
+}
+```
+
+```sh
+cd examples/utility
+parcel function register functions/meter_serial.wasm --manifest functions/is_meter_serial.yaml --owner kplc
+```
+
+A contract with `owner: kplc` can then call `is_meter_serial(row.meter)` in any rule or enricher. See `examples/udf-meter-serial` for the module and `examples/utility` for a workspace that uses it.
+
 ## Crates
 
 | Crate | What it is |
@@ -91,6 +110,7 @@ Other commands:
 | `parcel-core` | The compiler: parse, check, classify, translate, assemble. No I/O. |
 | `parcel-runtime` | The reference CEL interpreter, with parcel's built-in functions and the `Caller` type. |
 | `parcel-engine` | A reference executor on DataFusion: write, validate, query, differential test, bundles. |
+| `parcel-udf` | Write user-defined functions in Rust for WebAssembly (no dependencies). |
 | `parcel-cli` | The `parcel` command. |
 
 peQL, the production query engine, embeds the same artifacts.

@@ -10,6 +10,8 @@
 //! It contains no compiler.
 
 pub mod reference;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 use chrono::{DateTime, Utc};
 use parcel_core::registry::{FunctionPin, Registry};
@@ -64,6 +66,9 @@ impl Caller {
 pub fn verify_pins<'a>(pins: impl IntoIterator<Item = &'a FunctionPin>) -> Result<(), String> {
     let builtin = Registry::builtin();
     for pin in pins {
+        if parcel_core::registry::implementation(&pin.hash).is_some() {
+            continue; // a user function this runtime has loaded
+        }
         match builtin.get(&pin.name) {
             Some(e) if e.hash == pin.hash => {}
             Some(_) => {

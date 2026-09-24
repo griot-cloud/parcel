@@ -25,7 +25,18 @@ pub enum Nulls {
     Propagate,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Cost {
     Cheap,
@@ -52,6 +63,66 @@ pub struct FunctionEntry {
     pub owner: String,
     /// Hash of implementation identity and manifest. Compiled artifacts pin this.
     pub hash: String,
+    /// sha256 of the WebAssembly module, for user-defined functions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+}
+
+/// What a tenant submits with a WebAssembly module, one per function (design 7.4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FunctionManifest {
+    pub name: String,
+    pub version: u32,
+    /// Typed overloads such as `(string) -> bool`. v1 modules export one overload per name.
+    pub signatures: Vec<String>,
+    #[serde(default = "yes")]
+    pub deterministic: bool,
+    #[serde(default = "moderate")]
+    pub cost: Cost,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn moderate() -> Cost {
+    Cost::Moderate
+}
+
+/// Parse `(string, int) -> bool`. User functions take and return scalars.
+pub fn parse_signature(s: &str) -> Result<Signature, String> {
+    let bad = || format!("expected a signature like `(string, int) -> bool`, got `{s}`");
+    let (args, ret) = s.split_once("->").ok_or_else(bad)?;
+    let args = args
+        .trim()
+        .strip_prefix('(')
+        .and_then(|a| a.strip_suffix(')'))
+        .ok_or_else(bad)?;
+    let scalar = |t: &str| -> Result<Type, String> {
+        Ok(match t.trim() {
+            "bool" => Type::Bool,
+            "int" => Type::Int,
+            "uint" => Type::Uint,
+            "double" => Type::Double,
+            "string" => Type::String,
+            "bytes" => Type::Bytes,
+            other => {
+                return Err(format!(
+                    "`{other}` is not a user function type; use bool, int, uint, double, string or bytes"
+                ));
+            }
+        })
+    };
+    let args = if args.trim().is_empty() {
+        Vec::new()
+    } else {
+        args.split(',').map(scalar).collect::<Result<_, _>>()?
+    };
+    Ok(Signature {
+        args,
+        ret: scalar(ret)?,
+    })
 }
 
 /// A reference from a compiled artifact to the exact registry entry it used.
@@ -92,8 +163,87 @@ impl FunctionEntry {
             pushdown: Pushdown::None,
             owner: "core".into(),
             hash: hash::sha256_hex(hash::canonical_json(&manifest).as_bytes()),
+            module: None,
         }
     }
+
+    /// A tenant's function, implemented by a WebAssembly module with this sha256.
+    pub fn user(
+        manifest: &FunctionManifest,
+        owner: &str,
+        module_sha256: &str,
+    ) -> Result<FunctionEntry, String> {
+        if manifest.signatures.len() != 1 {
+            return Err("a v1 function module exports exactly one signature per function".into());
+        }
+        if !manifest
+            .name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Err(format!("`{}` is not a valid function name", manifest.name));
+        }
+        let signatures = manifest
+            .signatures
+            .iter()
+            .map(|s| parse_signature(s))
+            .collect::<Result<Vec<_>, _>>()?;
+        let identity = json!({
+            "impl": format!("wasm:{module_sha256}"),
+            "owner": owner,
+            "manifest": manifest,
+        });
+        Ok(FunctionEntry {
+            name: manifest.name.clone(),
+            version: manifest.version,
+            signatures,
+            deterministic: manifest.deterministic,
+            nulls: Nulls::Propagate,
+            cost: manifest.cost,
+            pushdown: Pushdown::None,
+            owner: owner.to_owned(),
+            hash: hash::sha256_hex(hash::canonical_json(&identity).as_bytes()),
+            module: Some(module_sha256.to_owned()),
+        })
+    }
+
+    pub fn is_builtin(&self) -> bool {
+        self.module.is_none()
+    }
+}
+
+/// How a pinned user function is executed: registered by the runtime that loaded it.
+pub type Implementation = std::sync::Arc<
+    dyn Fn(
+            &[datafusion_common::arrow::array::ArrayRef],
+            usize,
+        ) -> Result<datafusion_common::arrow::array::ArrayRef, String>
+        + Send
+        + Sync,
+>;
+
+fn implementations() -> &'static std::sync::RwLock<std::collections::HashMap<String, Implementation>>
+{
+    static IMPLS: std::sync::OnceLock<
+        std::sync::RwLock<std::collections::HashMap<String, Implementation>>,
+    > = std::sync::OnceLock::new();
+    IMPLS.get_or_init(Default::default)
+}
+
+/// Make an implementation available to plans pinned to `hash`.
+pub fn provide_implementation(hash: &str, imp: Implementation) {
+    implementations()
+        .write()
+        .expect("registry lock")
+        .insert(hash.to_owned(), imp);
+}
+
+pub fn implementation(hash: &str) -> Option<Implementation> {
+    implementations()
+        .read()
+        .expect("registry lock")
+        .get(hash)
+        .cloned()
 }
 
 fn sig(args: &[Type], ret: Type) -> Signature {
@@ -136,6 +286,18 @@ impl Registry {
 
     pub fn get(&self, name: &str) -> Option<&FunctionEntry> {
         self.entries.get(name)
+    }
+
+    /// The built-ins plus every function `owner` registered: what one contract may call.
+    pub fn visible_to(&self, owner: Option<&str>) -> Registry {
+        Registry {
+            entries: self
+                .entries
+                .iter()
+                .filter(|(_, e)| e.owner == "core" || Some(e.owner.as_str()) == owner)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        }
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &FunctionEntry> {

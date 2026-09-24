@@ -17,3 +17,10 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
+parcel-udf = { path = "../parcel-udf", version = "0.0.1" }
+wasmtime = { version = "47.0.0", default-features = false, features = ["cranelift", "runtime", "std"], optional = true }
+
+[features]
+default = ["wasm"]
+# Load tenants' WebAssembly functions (design 7.4).
+wasm = ["dep:wasmtime"]

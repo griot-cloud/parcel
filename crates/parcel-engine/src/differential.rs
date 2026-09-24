@@ -130,6 +130,7 @@ pub async fn differential(
                 if e.reads.iter().all(|r| row.contains_key(r)) {
                     let scope = Scope {
                         row: Some(row.clone().into()),
+                        pins: cc.functions.clone(),
                         ..Default::default()
                     };
                     if let Ok(v) = reference::eval(&e.cel, &reference::context(&scope)) {
@@ -191,6 +192,7 @@ pub async fn differential(
                         ctx: Some(caller_value.clone()),
                         dataset: None,
                         row: Some(row.clone().into()),
+                        pins: cc.functions.clone(),
                     };
                     reference::eval(&item.cel, &reference::context(&scope)).map(Some)
                 };

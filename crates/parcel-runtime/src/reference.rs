@@ -116,6 +116,8 @@ pub struct Scope {
     pub ctx: Option<Value>,
     pub dataset: Option<Value>,
     pub row: Option<Value>,
+    /// User functions the expression may call: exactly the ones its contract is pinned to.
+    pub pins: std::collections::BTreeSet<parcel_core::registry::FunctionPin>,
 }
 
 /// A CEL context holding the standard library, parcel's built-ins and the scope's variables.
@@ -140,6 +142,25 @@ pub fn context(scope: &Scope) -> Context<'static> {
     c.add_function("is_email", |s: Arc<String>| -> bool {
         email_re().is_match(&s)
     });
+    // Tenants' WebAssembly functions: exactly the ones this expression's contract is pinned to.
+    #[cfg(feature = "wasm")]
+    for pin in &scope.pins {
+        let Some(f) = crate::wasm::loaded()
+            .read()
+            .expect("lock")
+            .get(&pin.hash)
+            .cloned()
+        else {
+            continue;
+        };
+        let fname = pin.name.clone();
+        c.add_function(
+            &pin.name,
+            move |cel::extractors::Arguments(args): cel::extractors::Arguments| -> Result<Value, cel::ExecutionError> {
+                f.call_values(&args).map_err(|e| cel::ExecutionError::function_error(&fname, e))
+            },
+        );
+    }
     for (name, v) in [
         ("ctx", &scope.ctx),
         ("dataset", &scope.dataset),

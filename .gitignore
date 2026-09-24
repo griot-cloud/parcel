@@ -1,2 +1,4 @@
 target/
 examples/*/data/
+examples/*/_functions/
+examples/*/target/

@@ -472,11 +472,18 @@ pub fn check_layers(
     if !d.is_empty() {
         return Err(d);
     }
-    let functions = rules
+    // Every function any expression calls: rules, enrichers and dataset producers.
+    let mut functions: BTreeSet<FunctionPin> = rules
         .iter()
         .flat_map(|r| r.exprs())
         .flat_map(|x| x.expr.pins())
         .collect();
+    functions.extend(enrichers.iter().flat_map(|(_, x)| x.expr.pins()));
+    for p in &producers {
+        if let ProducerKind::Aggregate { arg: Some(a), .. } = &p.kind {
+            functions.extend(a.expr.pins());
+        }
+    }
     Ok(CheckedContract {
         name: doc.contract.clone(),
         version: doc.version,

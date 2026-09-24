@@ -34,6 +34,14 @@ use crate::manifest::{ColumnDef, schema_from_defs, schema_to_defs};
 pub const FORMAT: &str = "parcel-bundle/1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BundledFunction {
+    pub owner: String,
+    pub manifest: parcel_core::registry::FunctionManifest,
+    /// The module, hex.
+    pub module: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Bundle {
     pub format: String,
     pub parcel_version: String,
@@ -46,6 +54,9 @@ pub struct Bundle {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ancestors: Vec<ContractDoc>,
     pub row_schema: Vec<ColumnDef>,
+    /// The tenants' WebAssembly functions it is pinned to, so a verifier can recompile and run it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub functions: Vec<BundledFunction>,
     /// The three artifacts, readable: report, parameters, rules, statistics, layout.
     pub artifacts: serde_json::Value,
     /// Executable expressions, `datafusion-proto` encoded, hex: `admit/<id>`, `flag/<id>`, `project/<column>`.
@@ -60,6 +71,16 @@ impl Bundle {
         ancestors: &[ContractDoc],
         schema: &Schema,
         c: &Compilation,
+    ) -> DFResult<Bundle> {
+        Self::with_functions(doc, ancestors, schema, c, Vec::new())
+    }
+
+    pub fn with_functions(
+        doc: &ContractDoc,
+        ancestors: &[ContractDoc],
+        schema: &Schema,
+        c: &Compilation,
+        functions: Vec<BundledFunction>,
     ) -> DFResult<Bundle> {
         let cc = &c.contract;
         let mut exprs = BTreeMap::new();
@@ -104,6 +125,7 @@ impl Bundle {
             compilation_hash: cc.compilation_hash.clone(),
             document: doc.clone(),
             ancestors: ancestors.to_vec(),
+            functions,
             row_schema: schema_to_defs(schema),
             artifacts: serde_json::to_value(c)
                 .map_err(|e| DataFusionError::External(Box::new(e)))?,
@@ -130,7 +152,16 @@ impl Bundle {
             return Err(format!("unknown bundle format `{}`", self.format));
         }
         let schema = self.schema()?;
-        let c = compile_with(&self.document, &schema, &Registry::builtin(), &|n| {
+        let mut registry = Registry::builtin();
+        for f in &self.functions {
+            let module = hex::decode(&f.module).map_err(|e| e.to_string())?;
+            registry.insert(parcel_runtime::wasm::install(
+                &module,
+                &f.manifest,
+                &f.owner,
+            )?);
+        }
+        let c = compile_with(&self.document, &schema, &registry, &|n| {
             self.ancestors.iter().find(|a| a.contract == n).cloned()
         })
         .map_err(|d| {
@@ -145,7 +176,7 @@ impl Bundle {
                 self.compilation_hash, c.contract.compilation_hash
             ));
         }
-        let ctx = session();
+        let ctx = session_with(&c, &registry);
         let decode = |key: &str| -> Result<Expr, String> {
             let hexed = self
                 .exprs
@@ -217,6 +248,26 @@ impl Bundle {
             .map_err(|e| e.to_string())?;
         parcel_core::compile::resolve(plan).map_err(|e| e.to_string())
     }
+}
+
+/// A decoding session that also knows the user functions a compilation is pinned to.
+pub fn session_with(c: &Compilation, registry: &Registry) -> SessionContext {
+    let ctx = session();
+    for pin in &c.contract.functions {
+        if let Some(e) = registry
+            .get(&pin.name)
+            .filter(|e| e.hash == pin.hash && !e.is_builtin())
+            && let Some(sig) = e.signatures.first()
+        {
+            let args = sig.args.iter().map(|t| t.to_arrow()).collect();
+            ctx.register_udf(parcel_core::translate::user_function_udf(
+                pin,
+                args,
+                sig.ret.to_arrow(),
+            ));
+        }
+    }
+    ctx
 }
 
 /// A session with parcel's own functions registered, for decoding.

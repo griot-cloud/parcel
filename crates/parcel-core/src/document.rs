@@ -15,6 +15,9 @@ pub struct ContractDoc {
     /// Contract name, e.g. `sales/orders`. This is what callers put in `FROM`.
     pub contract: String,
     pub version: u32,
+    /// The tenant that owns the contract: its registered functions are callable here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherits: Option<String>,
     /// Where the data is. A child contract may omit it and inherit its parent's.
