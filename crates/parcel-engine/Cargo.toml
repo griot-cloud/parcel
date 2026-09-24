@@ -20,7 +20,13 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures = "0.3"
 datafusion-proto = "55.1.0"
 hex.workspace = true
+datafusion-substrait = { version = "55.1.0", default-features = false, optional = true }
+prost = { version = "0.14", optional = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
 yaml_serde.workspace = true
+
+[features]
+# Substrait export of the validation plan. Needs `protoc` at build time.
+substrait = ["dep:datafusion-substrait", "dep:prost"]

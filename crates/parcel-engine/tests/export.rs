@@ -146,3 +146,51 @@ rules:
     assert!(duck.warnings.iter().any(|w| w.contains("integer division")));
     Parser::parse_sql(&DuckDbDialect {}, &duck.sql).unwrap();
 }
+
+#[cfg(feature = "substrait")]
+#[tokio::test]
+async fn substrait_round_trip_reproduces_the_verdict() {
+    use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
+    use datafusion_substrait::substrait::proto::Plan;
+    use prost::Message;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = Engine::new(dir.path());
+    engine.register_contract(CONTRACT, &schema()).unwrap();
+    let verdict = engine
+        .write("pay/transfers", vec![batch()], WriteMode::Overwrite)
+        .await
+        .unwrap()
+        .verdict;
+    let comp = engine.get("pay/transfers").unwrap().compilation.clone();
+
+    let (bytes, _warnings) =
+        parcel_engine::export::validation_substrait(&comp, "transfers").unwrap();
+    let plan = Plan::decode(bytes.as_slice()).unwrap();
+    let ctx = SessionContext::new();
+    ctx.register_table(
+        "transfers",
+        Arc::new(MemTable::try_new(schema(), vec![vec![batch()]]).unwrap()),
+    )
+    .unwrap();
+    let logical = from_substrait_plan(&ctx.state(), &plan).await.unwrap();
+    let rows = ctx
+        .execute_logical_plan(logical)
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let b = &rows[0];
+    let get = |name: &str| {
+        let i = b
+            .schema()
+            .index_of(name)
+            .unwrap_or_else(|_| panic!("{name} in {:?}", b.schema()));
+        datafusion::arrow::util::display::array_value_to_string(b.column(i), 0).unwrap()
+    };
+    assert_eq!(get("valid"), verdict.valid.to_string());
+    for (a, fails) in &verdict.failures {
+        assert_eq!(get(&format!("fail__{a}")), fails.to_string(), "{a}");
+    }
+}

@@ -46,6 +46,10 @@ enum Command {
         /// The table the exported SQL reads.
         #[arg(long, default_value = "contract_data")]
         table: String,
+        /// Write the validation plan as a Substrait plan (protobuf) to this file.
+        #[cfg(feature = "substrait")]
+        #[arg(long, value_name = "FILE")]
+        substrait: Option<PathBuf>,
         #[command(flatten)]
         types: TypeHints,
         #[command(flatten)]
@@ -263,7 +267,29 @@ async fn run(cmd: Command) -> R {
             table,
             types,
             ws,
+            #[cfg(feature = "substrait")]
+            substrait,
         } => {
+            #[cfg(feature = "substrait")]
+            if let Some(path) = &substrait {
+                let source = std::fs::read_to_string(&contract).map_err(|e| e.to_string())?;
+                let (schema, _) = read_schema_only(&schema, &types).await?;
+                let (mut engine, _) = Engine::open(&ws.root).map_err(|e| e.to_string())?;
+                for d in sibling_documents(&contract, Some(&ws.root)).into_values() {
+                    engine.add_document(d);
+                }
+                let reg = engine
+                    .register_contract(&source, &schema)
+                    .map_err(|e| e.to_string())?;
+                let (bytes, warnings) =
+                    parcel_engine::export::validation_substrait(&reg.compilation, &table)?;
+                std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+                for w in warnings {
+                    eprintln!("warning: {w}");
+                }
+                eprintln!("wrote {}", path.display());
+                return Ok(ExitCode::SUCCESS);
+            }
             let sql = sql.as_deref().map(|d| (d, table.as_str()));
             cmd_compile(
                 &contract,

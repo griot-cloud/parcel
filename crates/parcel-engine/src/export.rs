@@ -288,3 +288,19 @@ fn warnings(plan: &LogicalPlan, dialect: &str) -> Vec<String> {
         })
         .collect()
 }
+
+#[cfg(feature = "substrait")]
+/// The validation plan as a Substrait plan (protobuf bytes), scanning `table` in place of the
+/// binding, for engines that consume Substrait. Functions are carried as Substrait extension
+/// functions by name; those whose meaning parcel verified only in DataFusion are warned about.
+pub fn validation_substrait(
+    c: &Compilation,
+    table: &str,
+) -> Result<(Vec<u8>, Vec<String>), String> {
+    use prost::Message;
+    let plan = rename_binding(c.validation.plan.clone(), table).map_err(|e| e.to_string())?;
+    let state = datafusion::prelude::SessionContext::new().state();
+    let substrait = datafusion_substrait::logical_plan::producer::to_substrait_plan(&plan, &state)
+        .map_err(|e| format!("substrait: {e}"))?;
+    Ok((substrait.encode_to_vec(), warnings(&plan, "substrait")))
+}

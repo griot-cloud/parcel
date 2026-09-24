@@ -25,3 +25,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+# `parcel compile --substrait`: needs `protoc` at build time.
+substrait = ["parcel-engine/substrait"]
