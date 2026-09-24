@@ -207,7 +207,7 @@ impl WasmFunction {
 }
 
 fn trap(name: &str, e: wasmtime::Error) -> String {
-    format!("`{name}` trapped: {e}")
+    format!("`{name}` trapped: {e:#}")
 }
 
 fn tag(t: &Type) -> Result<u8, String> {

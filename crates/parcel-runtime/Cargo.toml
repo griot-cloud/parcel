@@ -24,3 +24,6 @@ wasmtime = { version = "47.0.0", default-features = false, features = ["cranelif
 default = ["wasm"]
 # Load tenants' WebAssembly functions (design 7.4).
 wasm = ["dep:wasmtime"]
+
+[dev-dependencies]
+wat = "1.259.0"
