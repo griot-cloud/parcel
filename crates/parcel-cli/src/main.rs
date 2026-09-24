@@ -39,6 +39,13 @@ enum Command {
         /// Print the compiled artifacts as JSON instead of the report.
         #[arg(long)]
         json: bool,
+        /// Print the validation plan as SQL in this dialect instead of the report
+        /// (datafusion, duckdb, postgres, mysql, sqlite, bigquery, snowflake).
+        #[arg(long, value_name = "DIALECT")]
+        sql: Option<String>,
+        /// The table the exported SQL reads.
+        #[arg(long, default_value = "contract_data")]
+        table: String,
         #[command(flatten)]
         types: TypeHints,
     },
@@ -102,6 +109,8 @@ enum Command {
         #[command(flatten)]
         caller: CallerArgs,
     },
+    /// Print the JSON Schema of contract documents (for editors and CI).
+    Schema,
     /// List the contracts in a workspace and the state of their data.
     List {
         #[command(flatten)]
@@ -219,8 +228,13 @@ async fn run(cmd: Command) -> R {
             schema,
             out,
             json,
+            sql,
+            table,
             types,
-        } => cmd_compile(&contract, &schema, out.as_deref(), json, &types).await,
+        } => {
+            let sql = sql.as_deref().map(|d| (d, table.as_str()));
+            cmd_compile(&contract, &schema, out.as_deref(), json, sql, &types).await
+        }
         Command::Check {
             contract,
             data,
@@ -311,6 +325,14 @@ async fn run(cmd: Command) -> R {
             for f in schema.fields() {
                 println!("{:<24} {}", f.name(), f.data_type());
             }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Schema => {
+            let schema = parcel_core::document::json_schema();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&schema).map_err(|e| e.to_string())?
+            );
             Ok(ExitCode::SUCCESS)
         }
         Command::List { ws } => {
@@ -435,6 +457,7 @@ async fn cmd_compile(
     schema_from: &Path,
     out: Option<&Path>,
     json: bool,
+    sql: Option<(&str, &str)>,
     types: &TypeHints,
 ) -> R {
     let source =
@@ -459,7 +482,13 @@ async fn cmd_compile(
         next = p.inherits.clone();
         ancestors.push(p);
     }
-    if json {
+    if let Some((dialect, table)) = sql {
+        let export = parcel_engine::export::validation_sql(&c, dialect, table)?;
+        println!("{};", export.sql);
+        for w in &export.warnings {
+            eprintln!("warning: {w}");
+        }
+    } else if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&c).map_err(|e| e.to_string())?

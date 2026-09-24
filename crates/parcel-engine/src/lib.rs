@@ -11,6 +11,7 @@ pub mod bundle;
 pub mod differential;
 pub mod engine;
 pub mod error;
+pub mod export;
 pub mod manifest;
 pub mod shape;
 

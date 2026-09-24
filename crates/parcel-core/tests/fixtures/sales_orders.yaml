@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/griot-cloud/parcel/main/schema/contract.schema.json
 # The design doc's sales/orders example, adapted to parcel v0:
 # money is held as integer cents because v0 rules cannot read decimals.
 contract: sales/orders

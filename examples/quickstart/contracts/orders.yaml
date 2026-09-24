@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/griot-cloud/parcel/main/schema/contract.schema.json
 # Orders shared between three tenants. Each tenant sees its own rows; admins see all.
 contract: sales/orders
 version: 1

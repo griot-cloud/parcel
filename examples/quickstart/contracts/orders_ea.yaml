@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/griot-cloud/parcel/main/schema/contract.schema.json
 # A narrower view for an East Africa partner: inherits every rule of sales/orders,
 # sees three columns, and only East African rows.
 contract: sales/orders_ea

@@ -3,12 +3,13 @@
 //! This module only deserialises. Nothing here knows about schemas, types or
 //! CEL; that is the checker's job.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::diag::{Code, Diagnostic};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContractDoc {
     /// Contract name, e.g. `sales/orders`. This is what callers put in `FROM`.
@@ -36,7 +37,7 @@ pub struct ContractDoc {
 }
 
 /// Field name → type name, per namespace.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Extensions {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -48,7 +49,7 @@ pub struct Extensions {
 }
 
 /// Computes one `row.other` field from the row, once, at write.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Enricher {
     pub field: String,
@@ -56,7 +57,7 @@ pub struct Enricher {
 }
 
 /// Produces one `dataset.other` field at write: a constant, or an aggregate such as `avg(row.amount)`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DatasetProducer {
     pub field: String,
@@ -67,7 +68,7 @@ pub struct DatasetProducer {
 }
 
 /// Where the data physically is. Callers never see this.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Binding {
     pub parquet: String,
@@ -75,7 +76,7 @@ pub struct Binding {
     pub partitioned_by: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExposeColumn {
     pub name: String,
@@ -83,7 +84,7 @@ pub struct ExposeColumn {
     pub type_name: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum Rule {
     Decide(DecideRule),
@@ -118,21 +119,21 @@ impl Rule {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DecideRule {
     pub id: String,
     pub expr: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AdmitRule {
     pub id: String,
     pub expr: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AssertOnFail {
     Drop,
@@ -140,7 +141,7 @@ pub enum AssertOnFail {
     Report,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AssertRule {
     pub id: String,
@@ -148,7 +149,7 @@ pub struct AssertRule {
     pub on_fail: AssertOnFail,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TransformRule {
     pub id: String,
@@ -156,14 +157,14 @@ pub struct TransformRule {
     pub expr: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum GuaranteeOnFail {
     Deny,
     Annotate,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GuaranteeRule {
     pub id: String,
@@ -171,7 +172,7 @@ pub struct GuaranteeRule {
     pub on_fail: GuaranteeOnFail,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ShapeRule {
     pub id: String,
@@ -182,6 +183,16 @@ pub struct ShapeRule {
     pub params: serde_json::Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unless: Option<String>,
+}
+
+/// The JSON Schema of a contract document, for editors and CI.
+pub fn json_schema() -> Value {
+    let mut v =
+        serde_json::to_value(schemars::schema_for!(ContractDoc)).expect("schemas serialise");
+    if let Some(o) = v.as_object_mut() {
+        o.insert("title".into(), "parcel contract".into());
+    }
+    v
 }
 
 impl ContractDoc {

@@ -77,6 +77,8 @@ parcel query '...' --caller callers/globex-analyst.yaml --explain               
 ```
 
 Other commands:
+- `parcel compile contracts/orders.yaml --schema incoming/orders.csv --sql duckdb --table orders` prints the validation plan as SQL for another engine. The dialects are datafusion, duckdb, postgres, mysql, sqlite, bigquery and snowflake. Anything not verified in the target dialect is printed as a warning. `examples/verify-duckdb.py` runs the DuckDB SQL in DuckDB and checks that it reproduces parcel's verdict.
+- `parcel schema` prints the JSON Schema of contract documents, also checked in at [`schema/contract.schema.json`](schema/contract.schema.json). Put `# yaml-language-server: $schema=https://raw.githubusercontent.com/griot-cloud/parcel/main/schema/contract.schema.json` at the top of a contract to get completion and validation in editors.
 - `parcel validate sales/orders` re-runs the verdict.
 - `parcel describe sales/orders --tenant globex --purpose analytics` shows what a caller would see.
 - `parcel list` lists the workspace.
