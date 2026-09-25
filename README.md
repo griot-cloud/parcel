@@ -59,8 +59,7 @@ Windows (PowerShell):
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/griot-cloud/parcel/releases/latest/download/install.ps1 | iex"
 ```
 
-Or with pip, on any of those platforms: `pip install griot-parcel`. Each
-[release](https://github.com/griot-cloud/parcel/releases) also carries the binary for Linux
+Each [release](https://github.com/griot-cloud/parcel/releases) carries the binary for Linux
 (x86_64, arm64), macOS (Apple silicon, Intel) and Windows (x64) as an archive with its sha256.
 The released binary includes `--substrait`. To build from source instead: `cargo build --release`.
 

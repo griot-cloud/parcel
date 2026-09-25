@@ -14,4 +14,4 @@ then tags it. See [CONTRIBUTING](docs/contributing.md#releasing).
 - Exports: SQL for seven dialects, Substrait, and ODCS v3 import.
 - Tenant functions as WebAssembly modules, pinned by hash.
 - The `parcel` command: `check`, `compile`, `schema`, `import odcs`, `function verify`.
-- Installers for Linux, macOS and Windows, and `pip install griot-parcel`.
+- Binaries for Linux, macOS and Windows, with `install.sh` and `install.ps1` installers.
