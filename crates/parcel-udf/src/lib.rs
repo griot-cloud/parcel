@@ -9,7 +9,8 @@
 //! ```
 //!
 //! Build with `cargo build --release --target wasm32-unknown-unknown` (crate type `cdylib`),
-//! then register the module with a manifest (`parcel function register`).
+//! then check it with its manifest (`parcel function verify`) and pass it to
+//! `parcel check` and `parcel compile` with `--function MODULE=MANIFEST`.
 //!
 //! Argument and return types: `bool`, `i64` (CEL `int`), `u64` (`uint`), `f64` (`double`),
 //! `&str` or `String` (`string`), `&[u8]` or `Vec<u8>` (`bytes`). A null in any argument gives a

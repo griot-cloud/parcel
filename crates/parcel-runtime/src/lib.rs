@@ -7,8 +7,19 @@
 //! - [`verify_pins`]: confirms an artifact's pinned functions are the ones this
 //!   runtime implements, byte for byte by hash.
 //!
-//! It contains no compiler.
+//! - [`plan`]: binding caller parameters, the enrichment stage, and running a
+//!   validation plan over any table, so every engine runs artifacts the same way.
+//! - [`bundle`]: the portable compiled artifact, verified by recompiling.
+//! - [`differential`]: interpreter against DataFusion, row by row (`parcel check`).
+//! - [`export`]: the validation plan as SQL or Substrait for other engines.
+//!
+//! It contains no compiler and no engine: it stores nothing and plans no queries.
+//! peQL is the runtime that does.
 
+pub mod bundle;
+pub mod differential;
+pub mod export;
+pub mod plan;
 pub mod reference;
 #[cfg(feature = "wasm")]
 pub mod wasm;

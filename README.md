@@ -53,38 +53,32 @@ export PATH="$PWD/target/release:$PATH"
 cd examples/quickstart
 ```
 
-**Check** a contract against sample data. This prints how each rule will execute, the verdict, what each caller would see, and a differential test that evaluates every rule with a CEL interpreter and with DataFusion and requires them to agree:
+**Check** a contract against sample data. This prints how each rule will execute, the verdict, what each caller would see (or which `decide` rule refuses them), and a differential test that evaluates every rule with a CEL interpreter and with DataFusion and requires them to agree:
 
 ```sh
 parcel check contracts/orders.yaml --data incoming/orders.csv --type msisdn=utf8 \
-  --caller callers/globex-analyst.yaml --caller callers/acme-admin.yaml
+  --caller callers/globex-analyst.yaml --caller callers/acme-admin.yaml --caller callers/marketing.yaml
 ```
 
-**Write** data under the contract. parcel computes flags, partitions and clusters the files, stamps the contract hash into each Parquet file, runs the validation plan, and writes a manifest:
+Add `--json` for a machine-readable result, for CI.
+
+**Compile** it into a bundle, the portable artifact an engine loads:
 
 ```sh
-parcel write contracts/orders.yaml --input incoming/orders.csv --type msisdn=utf8
+parcel compile contracts/orders.yaml --schema incoming/orders.csv --type msisdn=utf8 -o orders.parcel.json
 ```
 
-**Query** through the contract. Every table in the SQL is a contract, and each caller gets what the contract allows them:
-
-```sh
-parcel query 'SELECT region, SUM(amount_cents) FROM "sales/orders" GROUP BY region' \
-  --caller callers/globex-analyst.yaml
-parcel query 'SELECT order_id, email FROM "sales/orders" LIMIT 5' --caller callers/acme-admin.yaml
-parcel query 'SELECT COUNT(*) FROM "sales/orders"' --caller callers/marketing.yaml     # refused
-parcel query '...' --caller callers/globex-analyst.yaml --explain                       # see the pruning
-```
+The bundle holds the contract document, its ancestors, the data schema, any tenant functions it pins, and the three artifacts encoded with `datafusion-proto`. An engine recompiles it and refuses it unless the compilation hash matches.
 
 Other commands:
-- `parcel compile contracts/orders.yaml --schema incoming/orders.csv --sql duckdb --table orders` prints the validation plan as SQL for another engine. The dialects are datafusion, duckdb, postgres, mysql, sqlite, bigquery and snowflake. Anything not verified in the target dialect is printed as a warning. `examples/verify-duckdb.py` runs the DuckDB SQL in DuckDB and checks that it reproduces parcel's verdict.
+- `parcel compile ... --sql duckdb --table orders` prints the validation plan as SQL for another engine. The dialects are datafusion, duckdb, postgres, mysql, sqlite, bigquery and snowflake. Anything not verified in the target dialect is printed as a warning. `examples/verify-duckdb.py` runs the DuckDB SQL in DuckDB and checks that it reproduces parcel's verdict.
 - `parcel compile ... --substrait plan.bin` writes the validation plan as a Substrait plan. Build with `--features substrait`, which needs `protoc`.
 - `parcel schema` prints the JSON Schema of contract documents, also checked in at [`schema/contract.schema.json`](schema/contract.schema.json). Put `# yaml-language-server: $schema=https://raw.githubusercontent.com/griot-cloud/parcel/main/schema/contract.schema.json` at the top of a contract to get completion and validation in editors.
 - `parcel import odcs contract.odcs.yaml -o contract.yaml` imports an Open Data Contract Standard (v3) document, and says what it did not carry over.
-- `parcel validate sales/orders` re-runs the verdict.
-- `parcel describe sales/orders --tenant globex --purpose analytics` shows what a caller would see.
-- `parcel list` lists the workspace.
-- `parcel compile contract.yaml --schema data.csv -o contract.parcel.json` writes a bundle.
+
+## Where contracts run
+
+parcel compiles; it does not store data or serve queries. [peQL](https://github.com/griot-cloud/peql) is the runtime: it writes data under a contract, keeps manifests, evaluates `decide` rules per query, splices `admit` and `transform` into the caller's plan, gates on guarantees, and applies shapes. Any other Arrow engine can run the validation plan through `parcel-runtime` or the SQL and Substrait exports.
 
 ## Your own functions, in WebAssembly
 
@@ -100,38 +94,23 @@ parcel_udf::export! {
 
 ```sh
 cd examples/utility
-parcel function register functions/meter_serial.wasm --manifest functions/is_meter_serial.yaml --owner kplc
+parcel function verify functions/meter_serial.wasm --manifest functions/is_meter_serial.yaml --owner kplc
+parcel check contracts/tokens.yaml --data incoming/tokens.csv \
+  --function functions/meter_serial.wasm=functions/is_meter_serial.yaml ...
 ```
 
-A contract with `owner: kplc` can then call `is_meter_serial(row.meter)` in any rule or enricher. See `examples/udf-meter-serial` for the module and `examples/utility` for a workspace that uses it.
-
-## What is enforced, and where the limits are
-
-For each caller, `parcel-engine` does the following:
-- evaluates `decide` rules before any file is opened
-- refuses data whose deny-level asserts or guarantees fail
-- builds a view that holds the contract's filters and transforms
-- runs the caller's SQL on a session where contract views are the only tables
-
-These cannot reach raw data or plans: DDL (`CREATE EXTERNAL TABLE`), DML, `COPY`, `SET` and `EXPLAIN`. Columns a contract does not expose do not exist for the caller, not even in `WHERE`. `suppress` covers every aggregate in a query, including those in `UNION` branches and scalar subqueries. `noise` does the same, and it refuses queries that read a noised column outside an aggregate.
-
-Known limits:
-- Callers are authenticated by the embedding application, not by parcel.
-- `noise` protects aggregates of the noised column. It does not add noise to counts of rows filtered on that column.
-- The privacy budget store is in memory and resets when the process restarts.
-- `parcel-engine` is the reference executor. peQL is the production engine, with the gate operator described in the peQL design.
+A contract with `owner: kplc` can call `is_meter_serial(row.meter)` in any rule or enricher. `parcel compile -o` carries the module in the bundle, so an engine can verify and run it. See `examples/udf-meter-serial` for the module and `examples/utility` for a workspace that uses it.
 
 ## Crates
 
 | Crate | What it is |
 |---|---|
 | `parcel-core` | The compiler: parse, check, classify, translate, assemble. No I/O. |
-| `parcel-runtime` | The reference CEL interpreter, with parcel's built-in functions and the `Caller` type. |
-| `parcel-engine` | A reference executor on DataFusion: write, validate, query, differential test, bundles. |
+| `parcel-runtime` | What an engine needs to run the artifacts: the `Caller` type, the reference CEL interpreter and built-ins, parameter binding, validation over any table, WebAssembly function loading, bundles, SQL and Substrait export, and the differential test. |
 | `parcel-udf` | Write user-defined functions in Rust for WebAssembly (no dependencies). |
 | `parcel-cli` | The `parcel` command. |
 
-peQL, the production query engine, embeds the same artifacts.
+peQL embeds `parcel-core` and `parcel-runtime`.
 
 ## The rule language
 

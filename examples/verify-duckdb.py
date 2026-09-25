@@ -2,10 +2,10 @@
 """Run a contract's validation plan, exported as DuckDB SQL, inside DuckDB and compare the
 verdict with parcel's own. Proves the SQL export means the same thing in another engine.
 
-    python3 examples/verify-duckdb.py <workspace> <contract.yaml> <data.csv> [column=type ...]
+    python3 examples/verify-duckdb.py <contract.yaml> <data.csv> [column=type ...]
 
 Requires `pip install duckdb` and a built `parcel` on PATH (or PARCEL=/path/to/parcel).
-The contract's data must already be written in the workspace (`parcel write`).
+parcel's own verdict comes from `parcel check --json` over the same file.
 """
 import json
 import math
@@ -16,19 +16,21 @@ import sys
 import duckdb
 
 parcel = os.environ.get("PARCEL", "parcel")
-root, contract, data, *types = sys.argv[1:]
+contract, data, *types = sys.argv[1:]
 type_args = [a for t in types for a in ("--type", t)]
 
 sql = subprocess.run(
     [parcel, "compile", contract, "--schema", data, "--sql", "duckdb", "--table", "t", *type_args],
-    check=True, capture_output=True, text=True, cwd=root,
+    check=True, capture_output=True, text=True,
 ).stdout
-name = next(line.split(":", 1)[1].strip() for line in open(os.path.join(root, contract)) if line.startswith("contract:"))
-verdict = json.loads(subprocess.run([parcel, "validate", name], capture_output=True, text=True, cwd=root).stdout)
+checked = json.loads(subprocess.run(
+    [parcel, "check", contract, "--data", data, "--json", *type_args], capture_output=True, text=True,
+).stdout)
+name, verdict = checked["contract"], checked["verdict"]
 
 duck_types = {t.split("=")[0]: {"utf8": "VARCHAR", "int64": "BIGINT", "float64": "DOUBLE"}[t.split("=")[1]] for t in types}
 con = duckdb.connect()
-con.execute(f"CREATE TABLE t AS SELECT * FROM read_csv('{os.path.join(root, data)}', types={duck_types!r})")
+con.execute(f"CREATE TABLE t AS SELECT * FROM read_csv('{data}', types={duck_types!r})")
 cur = con.execute(sql)
 row = dict(zip([d[0] for d in cur.description], cur.fetchone()))
 

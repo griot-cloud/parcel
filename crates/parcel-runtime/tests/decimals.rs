@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::datasource::MemTable;
 use parcel_core::{Code, ContractDoc, Registry, compile};
-use parcel_engine::differential::differential;
-use parcel_engine::{Caller, Engine, WriteMode};
+use parcel_runtime::Caller;
+use parcel_runtime::differential::differential;
+use parcel_runtime::plan::validate;
 
 const PAYMENTS: &str = r#"
 contract: pay/mpesa
@@ -130,14 +132,8 @@ async fn decimals_agree_between_engines() {
     );
     assert_eq!(diff.both_errored, 0);
 
-    let dir = tempfile::tempdir().unwrap();
-    let mut engine = Engine::new(dir.path());
-    engine.register_contract(PAYMENTS, &schema()).unwrap();
-    let v = engine
-        .write("pay/mpesa", vec![batch()], WriteMode::Overwrite)
-        .await
-        .unwrap()
-        .verdict;
+    let data = Arc::new(MemTable::try_new(schema(), vec![vec![batch()]]).unwrap());
+    let v = validate(&c, c.validation.plan.clone(), data).await.unwrap();
     assert!(v.valid, "{:?}", v.breached);
     // Every assert splits the rows: the agreement above is not all-true or all-false.
     for (rule, fails) in &v.failures {
@@ -153,11 +149,6 @@ async fn decimals_agree_between_engines() {
         v.stats["amount__max"]
     );
     assert!(v.stats["other__total"].as_str().unwrap().contains('.'));
-    let res = engine
-        .query(r#"SELECT SUM(net) AS s FROM "pay/mpesa""#, &callers[0])
-        .await
-        .unwrap();
-    assert_eq!(res.envelope.rows, 1);
 }
 
 #[test]

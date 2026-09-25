@@ -29,8 +29,6 @@ use parcel_core::compile::{BINDING_TABLE, Compilation, PARCEL_VERSION};
 use parcel_core::{ContractDoc, Registry, compile_with};
 use serde::{Deserialize, Serialize};
 
-use crate::manifest::{ColumnDef, schema_from_defs, schema_to_defs};
-
 pub const FORMAT: &str = "parcel-bundle/1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -155,11 +153,7 @@ impl Bundle {
         let mut registry = Registry::builtin();
         for f in &self.functions {
             let module = hex::decode(&f.module).map_err(|e| e.to_string())?;
-            registry.insert(parcel_runtime::wasm::install(
-                &module,
-                &f.manifest,
-                &f.owner,
-            )?);
+            registry.insert(crate::wasm::install(&module, &f.manifest, &f.owner)?);
         }
         let c = compile_with(&self.document, &schema, &registry, &|n| {
             self.ancestors.iter().find(|a| a.contract == n).cloned()
@@ -241,7 +235,7 @@ impl Bundle {
         Ok(c)
     }
 
-    /// Decode the validation plan; bind it to data with [`crate::engine::bind_binding`].
+    /// Decode the validation plan; bind it to data with [`crate::plan::bind_binding`].
     pub fn validation_plan(&self, task: &TaskContext) -> Result<LogicalPlan, String> {
         let bytes = hex::decode(&self.validation_plan).map_err(|e| e.to_string())?;
         let plan = logical_plan_from_bytes_with_extension_codec(&bytes, task, &BindingCodec)
@@ -274,7 +268,7 @@ pub fn session_with(c: &Compilation, registry: &Registry) -> SessionContext {
 pub fn session() -> SessionContext {
     let ctx = SessionContext::new();
     ctx.register_udf(parcel_core::translate::bytes_len_udf());
-    ctx.register_udf(crate::shape::sample_bucket_udf());
+    ctx.register_udf(parcel_core::translate::bytes_len_udf());
     ctx
 }
 
@@ -341,5 +335,67 @@ impl LogicalExtensionCodec for BindingCodec {
         }
         buf.extend_from_slice(BINDING_TABLE.as_bytes());
         Ok(())
+    }
+}
+
+/// One column of a persisted Arrow schema. `type` is Arrow's display form, which parses back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ColumnDef {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub data_type: String,
+    pub nullable: bool,
+}
+
+pub fn schema_to_defs(schema: &Schema) -> Vec<ColumnDef> {
+    schema
+        .fields()
+        .iter()
+        .map(|f| ColumnDef {
+            name: f.name().clone(),
+            data_type: f.data_type().to_string(),
+            nullable: f.is_nullable(),
+        })
+        .collect()
+}
+
+pub fn schema_from_defs(defs: &[ColumnDef]) -> Result<Schema, String> {
+    use std::str::FromStr;
+    let fields = defs
+        .iter()
+        .map(|d| {
+            let t = datafusion::arrow::datatypes::DataType::from_str(&d.data_type)
+                .map_err(|e| format!("column `{}`: {e}", d.name))?;
+            Ok(datafusion::arrow::datatypes::Field::new(
+                &d.name, t, d.nullable,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(Schema::new(fields))
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+    use datafusion::arrow::datatypes::{DataType, Field, TimeUnit};
+
+    #[test]
+    fn schemas_round_trip() {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new(
+                "b",
+                DataType::List(Field::new_list_field(DataType::Utf8, true).into()),
+                true,
+            ),
+            Field::new("c", DataType::Decimal128(18, 2), true),
+            Field::new(
+                "d",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            ),
+            Field::new("e", DataType::Date32, false),
+        ]);
+        assert_eq!(schema_from_defs(&schema_to_defs(&schema)).unwrap(), schema);
     }
 }

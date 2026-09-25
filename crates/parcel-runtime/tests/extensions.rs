@@ -4,9 +4,16 @@ use std::sync::Arc;
 
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::datasource::MemTable;
 use parcel_core::{Code, ContractDoc, Registry, compile};
-use parcel_engine::differential::differential;
-use parcel_engine::{Caller, Engine, WriteMode};
+use parcel_runtime::Caller;
+use parcel_runtime::bundle::Bundle;
+use parcel_runtime::differential::differential;
+use parcel_runtime::plan::{selectivity, validate};
+
+fn table(b: RecordBatch) -> Arc<MemTable> {
+    Arc::new(MemTable::try_new(schema(), vec![vec![b]]).unwrap())
+}
 
 const LOANS: &str = r#"
 contract: credit/loans
@@ -105,16 +112,11 @@ fn caller(department: &str, max: f64) -> Caller {
 
 #[tokio::test]
 async fn extensions_end_to_end() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut engine = Engine::new(dir.path());
-    engine
-        .register_contract(LOANS, &schema())
-        .unwrap_or_else(|e| panic!("{e}"));
-    let report = engine
-        .write("credit/loans", vec![batch()], WriteMode::Overwrite)
+    let doc = ContractDoc::parse(LOANS).unwrap();
+    let comp = compile(&doc, &schema(), &Registry::builtin()).unwrap_or_else(|d| panic!("{d:#?}"));
+    let v = &validate(&comp, comp.validation.plan.clone(), table(batch()))
         .await
         .unwrap();
-    let v = &report.verdict;
     // Rows with a null score get no band: the deny assert fails, the data is unservable.
     assert!(!v.valid);
     assert_eq!(v.breached, ["banded"]);
@@ -144,23 +146,20 @@ async fn extensions_end_to_end() {
         )
         .unwrap()
     };
-    let report = engine
-        .write("credit/loans", vec![fixed.clone()], WriteMode::Overwrite)
+    let fixed_verdict = validate(&comp, comp.validation.plan.clone(), table(fixed.clone()))
         .await
         .unwrap();
-    assert!(report.verdict.valid, "{:?}", report.verdict.breached);
+    assert!(fixed_verdict.valid, "{:?}", fixed_verdict.breached);
 
     // ctx.other decides what each caller sees.
-    let count = r#"SELECT COUNT(*) AS n FROM "credit/loans""#;
-    let n = |r: &parcel_engine::QueryResult| {
-        datafusion::arrow::util::display::array_value_to_string(r.batches[0].column(0), 0)
-            .unwrap()
-            .parse::<i64>()
-            .unwrap()
+    let n = |c: Caller| {
+        let comp = comp.clone();
+        let data = table(fixed.clone());
+        async move { selectivity(&comp, data, &c).await.unwrap() as i64 }
     };
-    let risk = n(&engine.query(count, &caller("risk", 1e9)).await.unwrap());
-    let sales = n(&engine.query(count, &caller("sales", 1e9)).await.unwrap());
-    let capped = n(&engine.query(count, &caller("risk", 3000.0)).await.unwrap());
+    let risk = n(caller("risk", 1e9)).await;
+    let sales = n(caller("sales", 1e9)).await;
+    let capped = n(caller("risk", 3000.0)).await;
     let with_amount = (0..300).filter(|i| i % 37 != 0).count() as i64;
     assert_eq!(
         risk, with_amount,
@@ -174,10 +173,13 @@ async fn extensions_end_to_end() {
 
     // A caller that does not supply a declared ctx.other field sees nothing (fails closed).
     let bare = Caller::new("u", "bank", "analytics");
-    assert!(engine.query(count, &bare).await.is_err());
+    assert!(
+        selectivity(&comp, table(fixed.clone()), &bare)
+            .await
+            .is_err()
+    );
 
     // Differential: enrichers and every rule agree between the interpreter and DataFusion.
-    let comp = engine.get("credit/loans").unwrap().compilation.clone();
     let diff = differential(
         &comp,
         &batch(),
@@ -193,11 +195,8 @@ async fn extensions_end_to_end() {
     assert!(diff.evaluations > 1000);
 
     // Bundles carry enrichers and verify.
-    let reg = engine.get("credit/loans").unwrap();
-    let b =
-        parcel_engine::bundle::Bundle::new(&reg.doc, &reg.ancestors, &schema(), &reg.compilation)
-            .unwrap();
-    parcel_engine::bundle::Bundle::from_json(&b.to_json().unwrap())
+    let b = Bundle::new(&doc, &[], &schema(), &comp).unwrap();
+    Bundle::from_json(&b.to_json().unwrap())
         .unwrap()
         .verify()
         .unwrap();

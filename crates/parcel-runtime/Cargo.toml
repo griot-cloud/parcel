@@ -1,6 +1,6 @@
 [package]
 name = "parcel-runtime"
-description = "Runs parcel artifacts: the reference CEL interpreter and function registration"
+description = "What an engine needs to run parcel artifacts: functions, the reference interpreter, bundles, validation"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,11 @@ parcel-core = { path = "../parcel-core", version = "0.0.1" }
 cel.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 datafusion-common.workspace = true
+datafusion = { version = "55.1.0", default-features = true }
+datafusion-proto = "55.1.0"
+datafusion-substrait = { version = "55.1.0", default-features = false, optional = true }
+prost = { version = "0.14", optional = true }
+thiserror.workspace = true
 regex = "1"
 serde.workspace = true
 serde_json.workspace = true
@@ -24,6 +29,11 @@ wasmtime = { version = "47.0.0", default-features = false, features = ["cranelif
 default = ["wasm"]
 # Load tenants' WebAssembly functions (design 7.4).
 wasm = ["dep:wasmtime"]
+# Substrait export of the validation plan. Needs `protoc` at build time.
+substrait = ["dep:datafusion-substrait", "dep:prost"]
 
 [dev-dependencies]
 wat = "1.259.0"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+yaml_serde.workspace = true

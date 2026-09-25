@@ -2,11 +2,11 @@
 
 | Workspace | Shows |
 |---|---|
-| [`quickstart`](quickstart) | A three-tenant orders contract: check, write, query per caller, refusals, and an inheriting child (`sales/orders_ea`). |
+| [`quickstart`](quickstart) | A three-tenant orders contract: check, what each caller sees, refusals, bundles, and an inheriting child (`sales/orders_ea`). |
 | [`utility`](utility) | A tenant's own Rust functions, compiled to WebAssembly, called from rules and enrichers. |
 | [`udf-meter-serial`](udf-meter-serial) | The source of that function module (`parcel_udf::export!`). |
 
-A workspace is a directory: contracts in `contracts/`, data under each contract's binding, and registered functions in `_functions/`. `parcel` commands take `--root` (default `.`).
+Each example holds contracts, callers and sample data. Writing and querying data under these contracts is peQL's job; see its examples.
 
 Run everything from a clean state:
 

@@ -29,7 +29,7 @@ Out of scope for v1: Python bindings (packaging work, not compiler work), federa
   - Loaded functions are keyed by pinned hash, never by name. The reference interpreter sees only the functions its contract is pinned to.
   - Name uniqueness is per workspace: a tenant cannot register a name another tenant owns.
   - Bundles embed the modules they are pinned to, so a verifier needs nothing else.
-- **8** ships behind the `substrait` feature on `parcel-engine` and `parcel-cli`, because the `substrait` crate needs `protoc` at build time and parcel should not impose that on everyone. A round trip passes: produce Substrait, consume it in a fresh DataFusion session, run it, and get the same verdict.
+- **8** ships behind the `substrait` feature on `parcel-runtime` and `parcel-cli` (it was on `parcel-engine` until that crate moved into peQL), because the `substrait` crate needs `protoc` at build time and parcel should not impose that on everyone. A round trip passes: produce Substrait, consume it in a fresh DataFusion session, run it, and get the same verdict.
 - **9** imports the parts of ODCS v3 that have a faithful parcel meaning:
   - columns, with types taken from `physicalType` where recognisable, otherwise `logicalType`
   - `required` and `primaryKey`, as deny-level presence asserts

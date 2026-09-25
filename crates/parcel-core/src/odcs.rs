@@ -188,7 +188,7 @@ pub fn import(source: &str, object: Option<&str>) -> Result<Imported, String> {
     Ok(Imported { doc, notes })
 }
 
-/// A quality entry: parcel-engine rules come across verbatim; anything else is noted.
+/// A quality entry: rules with `engine: parcel` come across verbatim; anything else is noted.
 fn import_quality(q: &Value, whose: &str, rules: &mut Vec<Rule>, notes: &mut Vec<String>) {
     let engine = q.get("engine").and_then(Value::as_str);
     let label = q

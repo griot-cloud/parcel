@@ -8,8 +8,14 @@ use datafusion::datasource::MemTable;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::dialect::{DuckDbDialect, PostgreSqlDialect};
 use datafusion::sql::sqlparser::parser::Parser;
-use parcel_engine::export::validation_sql;
-use parcel_engine::{Engine, WriteMode};
+use parcel_core::{Compilation, ContractDoc, Registry, compile};
+use parcel_runtime::export::validation_sql;
+use parcel_runtime::plan::{Verdict, validate};
+
+async fn verdict_of(c: &Compilation) -> Verdict {
+    let data = Arc::new(MemTable::try_new(schema(), vec![vec![batch()]]).unwrap());
+    validate(c, c.validation.plan.clone(), data).await.unwrap()
+}
 
 const CONTRACT: &str = r#"
 contract: pay/transfers
@@ -62,15 +68,13 @@ fn batch() -> RecordBatch {
 
 #[tokio::test]
 async fn exported_sql_reproduces_the_verdict() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut engine = Engine::new(dir.path());
-    engine.register_contract(CONTRACT, &schema()).unwrap();
-    let verdict = engine
-        .write("pay/transfers", vec![batch()], WriteMode::Overwrite)
-        .await
-        .unwrap()
-        .verdict;
-    let comp = engine.get("pay/transfers").unwrap().compilation.clone();
+    let comp = compile(
+        &ContractDoc::parse(CONTRACT).unwrap(),
+        &schema(),
+        &Registry::builtin(),
+    )
+    .unwrap();
+    let verdict = verdict_of(&comp).await;
 
     let export = validation_sql(&comp, "datafusion", "transfers").unwrap();
     assert!(export.warnings.is_empty());
@@ -139,8 +143,8 @@ expose: [{name: id, type: int64}]
 rules:
   - {id: halves, op: assert, expr: "row.amount / 2 >= 0", on_fail: report}
 "#;
-    let doc = parcel_core::ContractDoc::parse(src).unwrap();
-    let c = parcel_core::compile(&doc, &schema(), &parcel_core::Registry::builtin()).unwrap();
+    let doc = ContractDoc::parse(src).unwrap();
+    let c = compile(&doc, &schema(), &Registry::builtin()).unwrap();
     let duck = validation_sql(&c, "duckdb", "t").unwrap();
     assert!(duck.sql.contains("trunc("), "{}", duck.sql);
     assert!(duck.warnings.iter().any(|w| w.contains("integer division")));
@@ -154,18 +158,16 @@ async fn substrait_round_trip_reproduces_the_verdict() {
     use datafusion_substrait::substrait::proto::Plan;
     use prost::Message;
 
-    let dir = tempfile::tempdir().unwrap();
-    let mut engine = Engine::new(dir.path());
-    engine.register_contract(CONTRACT, &schema()).unwrap();
-    let verdict = engine
-        .write("pay/transfers", vec![batch()], WriteMode::Overwrite)
-        .await
-        .unwrap()
-        .verdict;
-    let comp = engine.get("pay/transfers").unwrap().compilation.clone();
+    let comp = compile(
+        &ContractDoc::parse(CONTRACT).unwrap(),
+        &schema(),
+        &Registry::builtin(),
+    )
+    .unwrap();
+    let verdict = verdict_of(&comp).await;
 
     let (bytes, _warnings) =
-        parcel_engine::export::validation_substrait(&comp, "transfers").unwrap();
+        parcel_runtime::export::validation_substrait(&comp, "transfers").unwrap();
     let plan = Plan::decode(bytes.as_slice()).unwrap();
     let ctx = SessionContext::new();
     ctx.register_table(

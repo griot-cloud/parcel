@@ -5,8 +5,13 @@ use std::sync::Arc;
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::util::pretty::pretty_format_batches;
-use parcel_engine::differential::differential;
-use parcel_engine::{Caller, Engine, WriteMode};
+use datafusion::catalog::TableProvider;
+use datafusion::datasource::{MemTable, provider_as_source};
+use datafusion::logical_expr::{Expr, LogicalPlanBuilder};
+use parcel_core::{Compilation, ContractDoc, Registry, compile};
+use parcel_runtime::Caller;
+use parcel_runtime::differential::differential;
+use parcel_runtime::plan::{param_values, session};
 
 const CONTRACT: &str = r#"
 contract: telco/subscribers
@@ -82,16 +87,73 @@ fn batch() -> RecordBatch {
     .unwrap()
 }
 
-fn rows(r: &parcel_engine::QueryResult) -> String {
-    pretty_format_batches(&r.batches).unwrap().to_string()
+fn scan(data: Arc<dyn TableProvider>) -> LogicalPlanBuilder {
+    LogicalPlanBuilder::scan("t", provider_as_source(data), None).unwrap()
+}
+
+/// The data as a writer stores it: raw columns plus every derived `_d_` column.
+async fn stored_data(c: &Compilation) -> Arc<dyn TableProvider> {
+    let raw = Arc::new(MemTable::try_new(schema(), vec![vec![batch()]]).unwrap());
+    let mut cols: Vec<Expr> = schema()
+        .fields()
+        .iter()
+        .map(|f| parcel_runtime::plan::col_ref(f.name()))
+        .collect();
+    cols.extend(
+        c.contract
+            .derived
+            .iter()
+            .map(|d| d.expr.clone().alias(&d.column)),
+    );
+    let plan =
+        parcel_core::compile::resolve(scan(raw).project(cols).unwrap().build().unwrap()).unwrap();
+    let df = session().execute_logical_plan(plan).await.unwrap();
+    let schema = Arc::new(df.schema().as_arrow().clone());
+    let batches = df.collect().await.unwrap();
+    Arc::new(MemTable::try_new(schema, vec![batches]).unwrap())
+}
+
+/// What a caller sees: admits, then the projection, ordered by id.
+async fn view(
+    c: &Compilation,
+    data: Arc<dyn TableProvider>,
+    caller: &Caller,
+    stored: bool,
+) -> String {
+    let cc = &c.contract;
+    let (admits, projection) = if stored {
+        (&cc.admits_stored, &cc.projection_stored)
+    } else {
+        (&cc.admits, &cc.projection)
+    };
+    let mut b = scan(data);
+    if let Some(f) = admits.iter().map(|(_, e)| e.clone()).reduce(Expr::and) {
+        b = b.filter(f).unwrap();
+    }
+    let b = b
+        .project(projection.iter().map(|(n, e)| e.clone().alias(n)))
+        .unwrap()
+        .sort(vec![parcel_runtime::plan::col_ref("id").sort(true, false)])
+        .unwrap();
+    let plan = parcel_core::compile::resolve(b.build().unwrap())
+        .unwrap()
+        .with_param_values(param_values(cc, caller).unwrap())
+        .unwrap();
+    let batches = session()
+        .execute_logical_plan(plan)
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert!(batches.iter().map(|b| b.num_rows()).sum::<usize>() > 0);
+    pretty_format_batches(&batches).unwrap().to_string()
 }
 
 #[tokio::test]
 async fn stored_and_live_agree() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut engine = Engine::new(dir.path());
-    engine.register_contract(CONTRACT, &schema()).unwrap();
-    let c = engine.get("telco/subscribers").unwrap().compilation.clone();
+    let doc = ContractDoc::parse(CONTRACT).unwrap();
+    let c = compile(&doc, &schema(), &Registry::builtin()).unwrap_or_else(|d| panic!("{d:#?}"));
     let derived: Vec<&str> = c.contract.derived.iter().map(|d| d.cel.as_str()).collect();
     assert_eq!(derived.len(), 3, "{derived:?}");
     assert!(derived.contains(&"is_msisdn(row.phone)"));
@@ -105,12 +167,15 @@ async fn stored_and_live_agree() {
             .reason
             .contains("computed at write")
     );
+    let stored_reads_d = c
+        .contract
+        .admits_stored
+        .iter()
+        .chain(&c.contract.projection_stored)
+        .any(|(_, e)| e.to_string().contains("_d_"));
+    assert!(stored_reads_d, "the stored variants read derived columns");
 
-    engine
-        .write("telco/subscribers", vec![batch()], WriteMode::Overwrite)
-        .await
-        .unwrap();
-
+    let data = stored_data(&c).await;
     let callers = [
         Caller::new("a", "safcom", "analytics"),
         Caller::new("b", "airtel", "analytics").with_roles(&["admin"]),
@@ -120,18 +185,10 @@ async fn stored_and_live_agree() {
             c
         },
     ];
-    let sql = r#"SELECT id, name, phone FROM "telco/subscribers" ORDER BY id"#;
     for caller in &callers {
-        let stored = engine.query(sql, caller).await.unwrap();
-        assert!(stored.envelope.contracts[0].flags_materialised);
-        let plan = engine.explain(sql, caller).await.unwrap();
-        assert!(plan.contains("_d_"), "stored columns are read:\n{plan}");
-        engine.set_use_stored(false);
-        let live = engine.query(sql, caller).await.unwrap();
-        assert!(!live.envelope.contracts[0].flags_materialised);
-        engine.set_use_stored(true);
-        assert_eq!(rows(&stored), rows(&live), "caller {}", caller.tenant);
-        assert!(stored.envelope.rows > 0);
+        let stored = view(&c, data.clone(), caller, true).await;
+        let live = view(&c, data.clone(), caller, false).await;
+        assert_eq!(stored, live, "caller {}", caller.tenant);
     }
 
     let diff = differential(&c, &batch(), &callers).await.unwrap();

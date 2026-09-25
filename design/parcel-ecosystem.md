@@ -11,7 +11,7 @@ Open data contract standards describe *what data should be*. dbt, Soda and Great
 | Person | What they do | Tool they already use | parcel surface |
 |---|---|---|---|
 | Contract author | Writes and reviews contracts | Git, VS Code, pull requests | YAML files, JSON Schema for autocomplete, `parcel check` in pre-commit and CI |
-| Data engineer | Builds pipelines that write data | dbt, Dagster, Airflow, Python | Python package (`pip install parcel`), dbt and Dagster adapters |
+| Data engineer | Builds pipelines that write data | dbt, Dagster, Airflow | the CLI (`parcel check --json`); adapters later, on demand |
 | Platform engineer | Runs the query engine | DataFusion, DuckDB, Spark | `parcel-runtime` crate; ValidationPlan as SQL or Substrait |
 | Data consumer | Queries data | SQL clients, notebooks, BI | Flight SQL through peQL; `describe` for schema discovery |
 | Auditor / regulator | Verifies claims about data | — | Open-source certificate verifier that re-runs the ValidationPlan |
@@ -36,7 +36,7 @@ Our native YAML stays the simplest way in. ODCS is the way into organisations th
 
 ### 3. Pipelines: dbt, Dagster, Airflow
 
-- **Python bindings** (PyO3, built with maturin, shipped as wheels to PyPI): `parcel.compile(contract, schema)` and `parcel.validate(contract, table)` over Arrow and Polars tables. This is the entry point for most data engineers.
+- **Python bindings** (deferred; see Decisions) (PyO3, built with maturin, shipped as wheels to PyPI): `parcel.compile(contract, schema)` and `parcel.validate(contract, table)` over Arrow and Polars tables. This is the entry point for most data engineers.
 - **dbt:**
   - generate a parcel contract skeleton from a dbt model contract (`schema.yml` column types)
   - run parcel's ValidationPlan as a dbt test, emitted as SQL in the warehouse's dialect
@@ -81,6 +81,8 @@ GDCP certificates sign the tuple (contract hash, ValidationPlan hash, data hash,
 
 ## Decisions (2026-09-25)
 
+- **parcel compiles; peQL runs.** parcel holds the language, the compiler and what any engine needs to execute its artifacts (`parcel-runtime`). Writing, manifests, query planning, shapes, budgets and the function store live in peQL only, so no concept is implemented twice. The reference executor that parcel carried until now is removed; its code is in history at `d9a059e` for porting.
+
 - **Language-neutral first.** parcel ships as Rust crates and a native CLI, installed with each platform's package manager. No language bindings yet: the CLI is the interface for everyone.
 - **No tool integrations yet.** The pipeline adapters above (dbt, Dagster, Airflow), a published GitHub Action, and catalogue publishing stay on this map as options. They get built when a user needs one, not before.
 - **peQL is open source** (`griot-cloud/peql`), so "query a contract, not a table" is an open standard, not only a product feature.
@@ -89,7 +91,7 @@ GDCP certificates sign the tuple (contract hash, ValidationPlan hash, data hash,
 
 | Open source | Product (Griot) |
 |---|---|
-| parcel: core, runtime, udf, engine, cli | Trust scoring (AI, Audit, Operational readiness) |
+| parcel: core, runtime, udf, cli | Trust scoring (AI, Audit, Operational readiness) |
 | peQL, the query engine | Certificate issuance and signing keys |
 | Exporters: SQL, Substrait, ODCS | Managed peQL, multi-tenant contract store, marketplace |
 | JSON Schema | Proactive insight layer |
@@ -98,7 +100,7 @@ GDCP certificates sign the tuple (contract hash, ValidationPlan hash, data hash,
 ## Packaging
 
 - **License:** Apache-2.0 (`LICENSE`), matching Arrow and DataFusion.
-- **Rust:** crates.io: `parcel-core`, `parcel-runtime`, `parcel-udf`, `parcel-engine`, `parcel-cli`. All five were free on 2026-09-24 and should be reserved by publishing 0.0.1. The bare `parcel` crate is taken.
+- **Rust:** crates.io: `parcel-core`, `parcel-runtime`, `parcel-udf`, `parcel-cli`, and `peql`. They were free on 2026-09-24 and should be reserved by publishing 0.0.1. The bare `parcel` crate is taken.
 - **CLI, per platform:** prebuilt binaries on GitHub Releases for Linux, macOS and Windows (x86_64 and arm64), installed through:
   - macOS and Linux: Homebrew, from a Griot tap (`brew install griot-cloud/tap/parcel`)
   - Windows: winget; the manifest goes to `microsoft/winget-pkgs`

@@ -1,6 +1,6 @@
 [package]
 name = "parcel-cli"
-description = "The parcel command line: check, compile, write, validate and query data contracts"
+description = "The parcel command line: check and compile data contracts"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,7 +14,6 @@ path = "src/main.rs"
 [dependencies]
 parcel-core = { path = "../parcel-core", version = "0.0.1" }
 parcel-runtime = { path = "../parcel-runtime", version = "0.0.1" }
-parcel-engine = { path = "../parcel-engine", version = "0.0.1" }
 datafusion = "55.1.0"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 clap = { version = "4", features = ["derive"] }
@@ -23,9 +22,7 @@ serde_json.workspace = true
 yaml_serde.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
-[dev-dependencies]
-tempfile = "3"
 
 [features]
 # `parcel compile --substrait`: needs `protoc` at build time.
-substrait = ["parcel-engine/substrait"]
+substrait = ["parcel-runtime/substrait"]

@@ -2823,11 +2823,9 @@ dependencies = [
  "clap",
  "datafusion",
  "parcel-core",
- "parcel-engine",
  "parcel-runtime",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "yaml_serde",
 ]
@@ -2855,43 +2853,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "parcel-engine"
-version = "0.0.1"
-dependencies = [
- "cel",
- "chrono",
- "datafusion",
- "datafusion-proto",
- "datafusion-substrait",
- "futures",
- "hex",
- "parcel-core",
- "parcel-runtime",
- "prost",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "yaml_serde",
-]
-
-[[package]]
 name = "parcel-runtime"
 version = "0.0.1"
 dependencies = [
  "cel",
  "chrono",
+ "datafusion",
  "datafusion-common",
+ "datafusion-proto",
+ "datafusion-substrait",
  "hex",
  "parcel-core",
  "parcel-udf",
+ "prost",
  "regex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "tokio",
  "wasmtime",
  "wat",
+ "yaml_serde",
 ]
 
 [[package]]

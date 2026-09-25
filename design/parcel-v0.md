@@ -1,6 +1,6 @@
 # parcel v0: the first working version
 
-**Status: done.** The end-to-end test (`crates/parcel-engine/tests/e2e.rs`) passes, and so does the profile-wide differential test (`crates/parcel-engine/tests/differential.rs`). The CLI runs the whole workflow on `examples/quickstart`. What was built beyond the plan is listed at the end.
+**Status: done.** (The reference executor, `parcel-engine`, was later removed: peQL is the runtime. Paths below are as they were at the time.) The end-to-end test (`crates/parcel-engine/tests/e2e.rs`) passes, and so does the profile-wide differential test (`crates/parcel-engine/tests/differential.rs`). The CLI runs the whole workflow on `examples/quickstart`. What was built beyond the plan is listed at the end.
 
 What "working" means, what we build to get there, and what we deliberately leave out. The full design is in `parcel-README.md`; this document is the cut of it we build first.
 

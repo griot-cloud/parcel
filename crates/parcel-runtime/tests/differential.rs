@@ -7,8 +7,8 @@ use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::logical_expr::lit;
 use parcel_core::{ContractDoc, Registry, compile};
-use parcel_engine::Caller;
-use parcel_engine::differential::differential;
+use parcel_runtime::Caller;
+use parcel_runtime::differential::differential;
 
 fn schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -293,7 +293,7 @@ async fn a_drifted_translation_is_caught() {
 
 #[tokio::test]
 async fn bundles_round_trip_and_verify() {
-    use parcel_engine::bundle::Bundle;
+    use parcel_runtime::bundle::Bundle;
     let doc = ContractDoc::parse(PROFILE).unwrap();
     let c = compile(&doc, &schema(), &Registry::builtin()).unwrap();
     let json = Bundle::new(&doc, &[], &schema(), &c)

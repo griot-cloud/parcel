@@ -6,6 +6,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::Caller;
+use crate::reference::{self, Scope};
 use cel::Value;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::ScalarValue;
@@ -14,12 +16,9 @@ use datafusion::logical_expr::{Expr, LogicalPlanBuilder};
 use datafusion::prelude::SessionContext;
 use parcel_core::Compilation;
 use parcel_core::compile::RowRuleKind;
-use parcel_runtime::Caller;
-use parcel_runtime::reference::{self, Scope};
 use serde::Serialize;
 
-use crate::engine::{enrich_plan, param_values};
-use crate::error::{EngineError, Result};
+use crate::plan::{Result, RuntimeError, enrich_plan, param_values};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Mismatch {
@@ -67,7 +66,7 @@ pub async fn differential(
     callers: &[Caller],
 ) -> Result<DiffReport> {
     let cc = &c.contract;
-    let batch = crate::engine::conform_one(batch.clone(), &cc.row_schema)?;
+    let batch = crate::plan::conform(batch.clone(), &cc.row_schema)?;
     let rows = batch.num_rows();
     let mut report = DiffReport {
         rows,
@@ -107,7 +106,7 @@ pub async fn differential(
                 .find(|(n, _)| n == column)
                 .map(|(_, e)| e.clone()),
         }
-        .ok_or_else(|| EngineError::Invalid(format!("rule `{}` has no expression", r.id)))?;
+        .ok_or_else(|| RuntimeError::Invalid(format!("rule `{}` has no expression", r.id)))?;
         items.push(Item {
             id: r.id.clone(),
             predicate: !matches!(r.kind, RowRuleKind::Transform { .. }),
