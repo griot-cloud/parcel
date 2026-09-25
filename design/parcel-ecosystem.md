@@ -114,4 +114,4 @@ GDCP certificates sign the tuple (contract hash, ValidationPlan hash, data hash,
 2. ODCS export, so parcel contracts can live in ODCS-aware catalogues.
 3. Integrations (pipelines, CI actions, catalogues, RLS exporters): only on demand.
 
-Built so far: the JSON Schema, a CI workflow for this repository, SQL export verified in DuckDB, Substrait (`--features substrait`), and ODCS import.
+Built so far: the JSON Schema, a CI workflow for this repository, SQL export verified in DuckDB, Substrait (`--features substrait`), ODCS import, a documentation site, and peQL 0.4 as the runtime (see `design/peql-0.4-parcel-integration.md`).

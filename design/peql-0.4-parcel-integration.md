@@ -1,7 +1,7 @@
 # peQL 0.4 on parcel: Architecture Design
 
 **Document type:** full architecture design (not an ADR)
-**Status:** APPROVED DIRECTION, revision 2 · 2026-09-25
+**Status:** IMPLEMENTED in peQL 0.4.0 · revision 3 · 2026-09-25 (see §11)
 **Scope:** peQL 0.3.0 becomes the runtime for parcel contracts. Every policy feature peQL has today is re-expressed through parcel, keeps the same observable behaviour, and is improved where 0.3 was weak. Both repositories change as needed so they form one ecosystem. **Out of scope:** Flight SQL, federated execution, certificate issuance, ODCS export, and compatibility with 0.3's JSON contract format. **Removed from the engine:** graph datasets (§5.5).
 **Companion:** `design/parcel-README.md` (the contract language), the peQL design README (the runtime shape), `design/parcel-ecosystem.md`.
 
@@ -294,3 +294,33 @@ All work goes on `main` of each repository. Each gate names the criteria it prov
 - JSON contracts are not carried forward (owner, 2026-09-25).
 - The graph layer leaves the engine and traversal is expressed in SQL over governed views (owner, 2026-09-25, "we can have this easily expressed as a function not part of the engine").
 - Superseded enforcement code is deleted in 0.4, not deprecated (owner: re-express through parcel, improve freely).
+
+## 11. As built
+
+What the implementation found and changed relative to the plan above:
+
+- **Noise is parcel's, entirely.** Row-level noise and `sample` compile into the view
+  (`parcel_core::udfs`), and `suppress` and aggregate noise are stateless rewrites in
+  `parcel_runtime::shape` that return budget charges. `LaplaceNoiseExec` was deleted rather
+  than reused; peQL only charges budgets.
+- **Masks.** `tokenize` was an alias of SHA-256 in 0.3 and is `hash_sha256`; `partial` is
+  `partial(value, n)`. Three 0.3 mask behaviours were fixed rather than reproduced: `redact`
+  no longer depends on the value's length, `partial` no longer reveals short values in full,
+  and the null mask is a real null (0.3 wrote an empty string).
+- **`CompiledContract.owner`** was added to parcel so engines read ownership from the artifact.
+- **The gate check** is "every scan of contract data is under its contract's gate" (`ScanExec`
+  marks scans), not "every named contract has a gate", because the optimiser may legitimately
+  remove a view (`WHERE false`). The barrier is a peQL optimiser rule (`GateBarrier`) that moves
+  only predicates that cannot fail below the gate; tests cover a division by zero on a hidden
+  row, with partition and row-level admits.
+- **0.3 defects found and fixed:** `K04DEngine` ran SQL over raw registered tables with no
+  enforcement; the pool carried no caller; the cache key `(tenant, sql)` could serve one
+  caller's rows to another; the Lance provider never installed its object store, read the same
+  bytes for every object, and built a table with the wrong schema when projecting.
+- **Lance** stays in 0.4.0: Lance 12 is on DataFusion 54 and Arrow 58, so batches cross by
+  Arrow IPC. Reads through storaged name each object; the `path` field and a `0x32` list opcode
+  are additions T04 must serve (peQL `docs/platform.md`).
+- **Tests:** peQL has the ported parcel executor suite (end-to-end, shapes, WebAssembly, split),
+  a 0.3 compatibility suite as parcel contracts, the gate and barrier tests, graph walls, guard,
+  platform, K04D and pool, Lance (direct and through a mock storaged), sealed-trait compile-fail,
+  and the Python package tests.
