@@ -129,6 +129,8 @@ pub struct CheckedContract {
     pub version: u32,
     /// Hash of the document's canonical form (design section 12).
     pub contract_hash: String,
+    /// The tenant the contract belongs to, after inheritance.
+    pub owner: Option<String>,
     pub binding: Binding,
     pub exposed: Vec<ExposedColumn>,
     pub rules: Vec<CheckedRule>,
@@ -500,6 +502,7 @@ pub fn check_layers(
         name: doc.contract.clone(),
         version: doc.version,
         contract_hash: contract_hash(doc),
+        owner: doc.owner.clone(),
         binding: binding.clone(),
         exposed,
         rules,

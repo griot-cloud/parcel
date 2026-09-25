@@ -140,6 +140,9 @@ pub struct CompiledContract {
     pub version: u32,
     pub contract_hash: String,
     pub compilation_hash: String,
+    /// The tenant the contract belongs to. Engines use it for visibility and to decide
+    /// whose functions the contract may call.
+    pub owner: Option<String>,
     pub binding: Binding,
     #[serde(serialize_with = "ser_schema")]
     pub row_schema: SchemaRef,
@@ -642,6 +645,7 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
             version: c.version,
             contract_hash: c.contract_hash.clone(),
             compilation_hash,
+            owner: c.owner.clone(),
             binding: c.binding.clone(),
             row_schema: Arc::new(schema.clone()),
             exposed_schema,
