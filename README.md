@@ -149,4 +149,4 @@ parcel accepts a strict subset of CEL. Anything it cannot translate faithfully i
 
 ## License
 
-Apache-2.0.
+Apache-2.0; see [`LICENSE`](LICENSE).

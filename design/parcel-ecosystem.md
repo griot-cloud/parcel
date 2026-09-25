@@ -79,36 +79,37 @@ User-defined functions use the `arrow-udf` WebAssembly ABI (design 7.4), so a fu
 
 GDCP certificates sign the tuple (contract hash, ValidationPlan hash, data hash, verdict). The open-source verifier recomputes the verdict with `parcel-runtime` and the ValidationPlan. Anyone can check a Griot certificate without trusting Griot. Issuance, scoring and orchestration stay in the product.
 
+## Decisions (2026-09-25)
+
+- **Language-neutral first.** parcel ships as Rust crates and a native CLI, installed with each platform's package manager. No language bindings yet: the CLI is the interface for everyone.
+- **No tool integrations yet.** The pipeline adapters above (dbt, Dagster, Airflow), a published GitHub Action, and catalogue publishing stay on this map as options. They get built when a user needs one, not before.
+- **peQL is open source** (`griot-cloud/peql`), so "query a contract, not a table" is an open standard, not only a product feature.
+
 ## What is open and what is product
 
 | Open source | Product (Griot) |
 |---|---|
-| parcel-core, parcel-runtime, parcel-udf, parcel-cli | Trust scoring (AI, Audit, Operational readiness) |
-| Python bindings, dbt and Dagster adapters | Certificate issuance and signing keys |
-| Exporters: SQL, Substrait, ODCS, RLS | Managed peQL, multi-tenant contract store, marketplace |
-| JSON Schema, GitHub Action, pre-commit hook | Proactive insight layer |
+| parcel: core, runtime, udf, engine, cli | Trust scoring (AI, Audit, Operational readiness) |
+| peQL, the query engine | Certificate issuance and signing keys |
+| Exporters: SQL, Substrait, ODCS | Managed peQL, multi-tenant contract store, marketplace |
+| JSON Schema | Proactive insight layer |
 | GDCP verifier | |
-
-Open question: whether peQL itself is open. Open peQL makes "query a contract, not a table" a standard others can build on. Closed peQL keeps the enforcement engine as product. Parcel's design works either way, because parcel never depends on peQL.
 
 ## Packaging
 
-- **License:** Apache-2.0, matching Arrow and DataFusion, whose communities are our first contributors. The workspace `Cargo.toml` already declares it; a `LICENSE` file is to be added once confirmed.
-- **Rust:** crates.io (`parcel-core`, `parcel-runtime`, `parcel-udf`, `parcel-cli`).
-- **Python:** PyPI wheels via maturin.
-- **CLI:** `cargo install`, `cargo binstall`, Homebrew, and a container image for CI.
-- **Name check (2026-09-24):** `parcel-core`, `parcel-runtime`, `parcel-cli` and `parcel-udf` are free on crates.io. The bare `parcel` crate is taken. On PyPI and npm, "parcel" is strongly associated with the Parcel JS bundler, so the Python package likely needs a distinct name (e.g. `parcel-contracts`). Reserve the crate names early.
+- **License:** Apache-2.0 (`LICENSE`), matching Arrow and DataFusion.
+- **Rust:** crates.io: `parcel-core`, `parcel-runtime`, `parcel-udf`, `parcel-engine`, `parcel-cli`. All five were free on 2026-09-24 and should be reserved by publishing 0.0.1. The bare `parcel` crate is taken.
+- **CLI, per platform:** prebuilt binaries on GitHub Releases for Linux, macOS and Windows (x86_64 and arm64), installed through:
+  - macOS and Linux: Homebrew, from a Griot tap (`brew install griot-cloud/tap/parcel`)
+  - Windows: winget; the manifest goes to `microsoft/winget-pkgs`
+  - Debian/Ubuntu: a `.deb` on each release, with an apt repository later
+  - Fedora/RHEL: an `.rpm` on each release
+  - anywhere: `cargo install parcel-cli`, or a one-line install script
 
-## Order and status
+## Order
 
-1. JSON Schema, GitHub Action and pre-commit hook: cheap, and needed by every author.
-   - **Built:** JSON Schema (`parcel schema`, `schema/contract.schema.json`) and a CI workflow.
-   - **Next:** a reusable `parcel check` GitHub Action and a pre-commit hook.
-2. Python bindings and the Dagster asset check: our own stack uses them. **Next.**
-3. The validation plan as DuckDB and Postgres SQL: makes the checks run anywhere.
-   - **Built:** `parcel compile --sql` for seven dialects, and verified in DuckDB (`examples/verify-duckdb.py`).
-   - **Also built:** Substrait (`--features substrait`).
-4. ODCS import and export: the door into organisations with existing contracts.
-   - **Built:** import (`parcel import odcs`).
-   - **Next:** export.
-5. dbt adapter, RLS exporters and catalogue publishing. **Later.**
+1. Package managers for the CLI (above).
+2. ODCS export, so parcel contracts can live in ODCS-aware catalogues.
+3. Integrations (pipelines, CI actions, catalogues, RLS exporters): only on demand.
+
+Built so far: the JSON Schema, a CI workflow for this repository, SQL export verified in DuckDB, Substrait (`--features substrait`), and ODCS import.
