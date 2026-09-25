@@ -204,6 +204,12 @@ fn load_caller(p: &Path) -> Result<Caller, String> {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Rust ignores SIGPIPE, so a closed stdout (`parcel ... | head -1`) makes every print
+    // panic. Restore the default: stop quietly, as other command-line tools do.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     match run(cli.command).await {
         Ok(code) => code,

@@ -13,8 +13,9 @@ cd "$here/quickstart"
   --caller callers/globex-analyst.yaml --caller callers/acme-admin.yaml --caller callers/marketing.yaml | tail -8
 "$P" check contracts/orders_ea.yaml --data incoming/orders.csv --type msisdn=utf8 \
   --caller callers/globex-analyst.yaml | tail -3
-"$P" check contracts/orders.yaml --data incoming/orders.csv --type msisdn=utf8 \
-  --caller callers/marketing.yaml --json | grep -q '"refused_by": "analytics_only"'
+j=$("$P" check contracts/orders.yaml --data incoming/orders.csv --type msisdn=utf8 \
+  --caller callers/marketing.yaml --json)
+grep -q '"refused_by": "analytics_only"' <<<"$j"
 "$P" compile contracts/orders_ea.yaml --schema incoming/orders.csv --type msisdn=utf8 -o "$out/orders_ea.json" >/dev/null
 if python3 -c "import duckdb" 2>/dev/null; then
   PARCEL="$P" python3 "$here/verify-duckdb.py" contracts/orders.yaml incoming/orders.csv msisdn=utf8
@@ -24,7 +25,9 @@ echo "== utility (tenant WebAssembly functions)"
 cd "$here/utility"
 F=()
 for f in is_meter_serial units county; do
-  "$P" function verify functions/meter_serial.wasm --manifest "functions/$f.yaml" --owner kplc | head -1
+  # Captured, then filtered: under pipefail, `| head -1` fails whenever head exits first.
+  v=$("$P" function verify functions/meter_serial.wasm --manifest "functions/$f.yaml" --owner kplc)
+  head -1 <<<"$v"
   F+=(--function "functions/meter_serial.wasm=functions/$f.yaml")
 done
 "$P" check contracts/tokens.yaml --data incoming/tokens.csv "${F[@]}" \

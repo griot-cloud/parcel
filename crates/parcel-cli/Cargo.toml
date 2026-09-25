@@ -22,6 +22,8 @@ serde_json.workspace = true
 yaml_serde.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 # `parcel compile --substrait`: needs `protoc` at build time.
