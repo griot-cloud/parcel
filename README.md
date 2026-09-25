@@ -43,7 +43,7 @@ Compiling produces three artifacts that share one hash:
 - **ValidationPlan:** one aggregate query that returns a single verdict row, saying whether the data satisfies the contract.
 - **WritePlan:** what must be on disk for every rule to be cheap: flag columns, clustering, partitioning and bloom filters.
 
-The design is in [`design/parcel-README.md`](design/parcel-README.md). The v0 cut is in [`design/parcel-v0.md`](design/parcel-v0.md), and how parcel fits the wider ecosystem is in [`design/parcel-ecosystem.md`](design/parcel-ecosystem.md).
+Documentation: **[griot-cloud.github.io/parcel](https://griot-cloud.github.io/parcel/)** (sources in [`docs/`](docs/)). The design is in [`design/parcel-README.md`](design/parcel-README.md). The v0 cut is in [`design/parcel-v0.md`](design/parcel-v0.md), and how parcel fits the wider ecosystem is in [`design/parcel-ecosystem.md`](design/parcel-ecosystem.md).
 
 ## Quickstart
 

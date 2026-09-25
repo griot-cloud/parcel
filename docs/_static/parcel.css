@@ -1,0 +1,47 @@
+/* Griot palette: green (primary), gold (accent), navy (ink), cream (surface). */
+:root {
+  --griot-green: #00875a;
+  --griot-green-dark: #006644;
+  --griot-gold: #ffb800;
+  --griot-navy: #1a1a2e;
+  --griot-cream: #f7f4ef;
+  --griot-muted: #5d6475;
+  --griot-border: #e4e1da;
+}
+
+html.light {
+  --sy-c-primary: var(--griot-green);
+  --sy-c-link: var(--griot-green-dark);
+  --sy-c-text: var(--griot-navy);
+}
+
+html.dark {
+  --griot-muted: #b3b8c6;
+  --griot-border: #33334f;
+  --sy-c-primary: #2fbf8a;
+  --sy-c-link: #2fbf8a;
+}
+
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.sy-main > .sy-container { max-width: 90rem; }
+.sy-content { max-width: 48rem; }
+.sy-head { border-bottom: 1px solid var(--griot-border); }
+.sy-sidebar { border-right: 1px solid var(--griot-border); }
+
+.parcel-hero {
+  margin: 0 0 1.5rem;
+  padding: 1.25rem 1.5rem;
+  border-left: 4px solid var(--griot-gold);
+  background: var(--griot-cream);
+  color: var(--griot-navy);
+  border-radius: 6px;
+}
+html.dark .parcel-hero { background: #25254a; color: #f7f4ef; }
+.parcel-hero p { margin: 0; font-size: 1.05rem; }
+
+/* The three-namespace table reads as a legend. */
+.namespaces td:first-child code { font-weight: 600; color: var(--griot-green-dark); }
+html.dark .namespaces td:first-child code { color: #2fbf8a; }
