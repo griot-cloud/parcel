@@ -45,11 +45,28 @@ Compiling produces three artifacts that share one hash:
 
 Documentation: **[griot-cloud.github.io/parcel](https://griot-cloud.github.io/parcel/)** (sources in [`docs/`](docs/)). The design is in [`design/parcel-README.md`](design/parcel-README.md). The v0 cut is in [`design/parcel-v0.md`](design/parcel-v0.md), and how parcel fits the wider ecosystem is in [`design/parcel-ecosystem.md`](design/parcel-ecosystem.md).
 
+## Install
+
+Linux and macOS:
+
+```sh
+curl -LsSf https://github.com/griot-cloud/parcel/releases/latest/download/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/griot-cloud/parcel/releases/latest/download/install.ps1 | iex"
+```
+
+Or with pip, on any of those platforms: `pip install griot-parcel`. Each
+[release](https://github.com/griot-cloud/parcel/releases) also carries the binary for Linux
+(x86_64, arm64), macOS (Apple silicon, Intel) and Windows (x64) as an archive with its sha256.
+The released binary includes `--substrait`. To build from source instead: `cargo build --release`.
+
 ## Quickstart
 
 ```sh
-cargo build --release
-export PATH="$PWD/target/release:$PATH"
 cd examples/quickstart
 ```
 
@@ -72,7 +89,7 @@ The bundle holds the contract document, its ancestors, the data schema, any tena
 
 Other commands:
 - `parcel compile ... --sql duckdb --table orders` prints the validation plan as SQL for another engine. The dialects are datafusion, duckdb, postgres, mysql, sqlite, bigquery and snowflake. Anything not verified in the target dialect is printed as a warning. `examples/verify-duckdb.py` runs the DuckDB SQL in DuckDB and checks that it reproduces parcel's verdict.
-- `parcel compile ... --substrait plan.bin` writes the validation plan as a Substrait plan. Build with `--features substrait`, which needs `protoc`.
+- `parcel compile ... --substrait plan.bin` writes the validation plan as a Substrait plan. The released binary has it; a source build needs `--features substrait` and `protoc`.
 - `parcel schema` prints the JSON Schema of contract documents, also checked in at [`schema/contract.schema.json`](schema/contract.schema.json). Put `# yaml-language-server: $schema=https://raw.githubusercontent.com/griot-cloud/parcel/main/schema/contract.schema.json` at the top of a contract to get completion and validation in editors.
 - `parcel import odcs contract.odcs.yaml -o contract.yaml` imports an Open Data Contract Standard (v3) document, and says what it did not carry over.
 

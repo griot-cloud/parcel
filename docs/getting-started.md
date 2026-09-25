@@ -1,7 +1,25 @@
 # Quickstart
 
+Install the `parcel` command. On Linux or macOS:
+
 ```bash
-cargo install --git https://github.com/griot-cloud/parcel parcel-cli
+curl -LsSf https://github.com/griot-cloud/parcel/releases/latest/download/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/griot-cloud/parcel/releases/latest/download/install.ps1 | iex"
+```
+
+Or on any of them, `pip install griot-parcel`. The installers check the download's sha256;
+`PARCEL_VERSION` picks a release and `PARCEL_INSTALL_DIR` the destination. Every
+[release](https://github.com/griot-cloud/parcel/releases) also carries the archives
+themselves, for Linux (x86_64, arm64), macOS (Apple silicon, Intel) and Windows (x64).
+
+Then fetch the example workspace:
+
+```bash
 git clone https://github.com/griot-cloud/parcel && cd parcel/examples/quickstart
 ```
 

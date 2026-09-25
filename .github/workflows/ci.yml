@@ -1,9 +1,28 @@
 name: ci
 
+# One workflow, after griot-cloud/moruna. Each part answers to a different event:
+#
+#   a pull request   the gate: fmt, clippy, tests and the examples.
+#   a push to main   the same gate, then the release path, which does nothing unless the
+#                    version in Cargo.toml has no tag yet. main also takes direct pushes, so
+#                    the release waits on the tests of the commit it ships.
+#
+# Nobody creates a tag. A version that reaches main untagged is the release: the `parcel`
+# binary is built and run on every platform we ship, the wheels go to PyPI, and only then
+# is v<version> tagged, with the binaries, their checksums and the installers attached. A
+# tag therefore always marks something that shipped; pushing one by hand triggers nothing.
 on:
   push:
     branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # A superseded pull request run is waste; a superseded release is a half-published one.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,7 +31,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -30,3 +49,224 @@ jobs:
           pip install duckdb
           cargo build -p parcel-cli
           PARCEL=$PWD/target/debug/parcel examples/run-all.sh
+      - name: The installer scripts parse
+        run: sh -n install.sh
+
+  # The release path. `version` reads the tree, `binaries` and `wheels` build on every
+  # platform we ship, and `release` alone holds the tokens that write to PyPI and to this
+  # repository.
+  version:
+    name: a version to release
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The tags, because their absence is the question this job answers.
+          fetch-depth: 0
+      - id: check
+        name: Is the version in Cargo.toml already released?
+        run: |
+          version="$(awk '/^\[workspace.package\]/{f=1; next} /^\[/{f=0} f && /^version = /{gsub(/"/,"",$3); print $3; exit}' Cargo.toml)"
+          if [ -z "$version" ]; then
+            echo "no version under [workspace.package] in Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "v$version is tagged already, so this push is not a release"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "v$version has no tag, so this push releases it"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  binaries:
+    name: parcel (${{ matrix.target }})
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, native: true }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, native: true }
+          - { os: macos-14, target: aarch64-apple-darwin, native: true }
+          - { os: macos-14, target: x86_64-apple-darwin, native: false }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, native: true }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: protoc (for the substrait feature)
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update && sudo apt-get install -y protobuf-compiler ;;
+            macOS) brew install protobuf ;;
+            Windows) choco install protoc -y --no-progress ;;
+          esac
+      - name: Build
+        run: cargo build --release --locked -p parcel-cli --features substrait --target ${{ matrix.target }}
+      - name: The binary runs before it is published
+        if: matrix.native
+        run: |
+          exe=target/${{ matrix.target }}/release/parcel
+          "$exe" --version
+          cd examples/quickstart
+          "../../$exe" compile contracts/orders.yaml --schema incoming/orders.csv --type msisdn=utf8 -o "$RUNNER_TEMP/orders.json"
+          "../../$exe" compile contracts/orders.yaml --schema incoming/orders.csv --type msisdn=utf8 --substrait "$RUNNER_TEMP/orders.substrait" >/dev/null
+      - name: Package
+        run: |
+          name=parcel-${{ matrix.target }}
+          mkdir -p "dist/$name"
+          cp LICENSE README.md "dist/$name/"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp target/${{ matrix.target }}/release/parcel.exe "dist/$name/"
+            (cd dist && 7z a -tzip "$name.zip" "$name" >/dev/null && sha256sum "$name.zip" > "$name.zip.sha256")
+          else
+            cp target/${{ matrix.target }}/release/parcel "dist/$name/"
+            (cd dist && tar -czf "$name.tar.gz" "$name" && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          fi
+          rm -rf "dist/$name"
+          ls -la dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bin-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  wheels:
+    name: wheel (${{ matrix.target }})
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64, native: true }
+          - { os: ubuntu-latest, target: aarch64, native: false }
+          - { os: macos-14, target: aarch64, native: true }
+          - { os: macos-14, target: x86_64, native: false }
+          - { os: windows-latest, target: x64, native: true }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: protoc (for the substrait feature, outside the manylinux container)
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            macOS) brew install protobuf ;;
+            Windows) choco install protoc -y --no-progress ;;
+          esac
+      - name: Build the wheel (the parcel binary, installable with pip)
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          command: build
+          args: --release --locked --features substrait --out dist
+          manylinux: auto
+          # Inside the manylinux container protoc runs on the build host, whatever the target.
+          before-script-linux: |
+            arch=$(uname -m | sed 's/aarch64/aarch_64/')
+            curl -fsSL -o /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-$arch.zip"
+            (unzip -o -q /tmp/protoc.zip -d /usr/local || python3 -m zipfile -e /tmp/protoc.zip /usr/local)
+            chmod +x /usr/local/bin/protoc
+            protoc --version
+      - name: The wheel installs and runs before it is published
+        if: matrix.native
+        shell: bash
+        run: |
+          python -m pip install --no-index --find-links dist griot-parcel
+          parcel --version
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: sdist
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: publish and tag
+    needs: [version, binaries, wheels, sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/griot-parcel
+    permissions:
+      # Trusted Publishing's OpenID Connect token (no PyPI token in this repository), and
+      # write access for the tag and release below.
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: pypi
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: bin-*
+          merge-multiple: true
+          path: bin
+      - name: Everything that was built is here
+        run: ls -la pypi bin
+      - name: Publish to PyPI
+        # Off until the PyPI trusted publisher for griot-parcel exists; the repository
+        # variable PYPI_PUBLISH=true turns it on.
+        if: vars.PYPI_PUBLISH == 'true'
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.14.0
+        with:
+          packages-dir: pypi
+          skip-existing: true
+      - name: Tag what was published, with the binaries and installers attached
+        # After the upload, never before: a tag made first survives a failed publish and
+        # names a release that does not exist.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          notes="$(awk -v v="$VERSION" '/^## /{ if (f) exit; h=$2; gsub(/[\[\]:]/,"",h); if (h == v) {f=1; next} } f' CHANGELOG.md 2>/dev/null || true)"
+          install="$(cat <<EOF
+
+
+          ## Install
+
+          Linux and macOS: \`curl -LsSf https://github.com/$GITHUB_REPOSITORY/releases/latest/download/install.sh | sh\`
+
+          Windows: \`powershell -ExecutionPolicy ByPass -c "irm https://github.com/$GITHUB_REPOSITORY/releases/latest/download/install.ps1 | iex"\`
+
+          Or download the archive for your platform below and check it against its \`.sha256\`.
+          EOF
+          )"
+          gh release create "v$VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "$VERSION" \
+            --notes "${notes:-See the repository for changes.}$install" \
+            bin/* install.sh install.ps1

@@ -15,3 +15,12 @@ interpreter and DataFusion are shown to agree on it. For the documentation:
 python -m pip install -r docs/requirements.txt
 sphinx-build -W --keep-going -b html docs docs/_build/html
 ```
+
+## Releasing
+
+Nobody creates a tag. To release, bump `[workspace.package] version` in `Cargo.toml` and add a
+`## [x.y.z]: title` section to `CHANGELOG.md`. When that commit is on `main` and the tests
+pass, CI builds the `parcel` binary for Linux (x86_64, arm64), macOS (arm64, x86_64) and
+Windows (x64), runs it on every platform that can, builds the matching wheels, publishes them to
+PyPI as `griot-parcel`, and only then tags `vx.y.z` and attaches the archives, their sha256
+files, `install.sh` and `install.ps1` to the release. A tag pushed by hand triggers nothing.

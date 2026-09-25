@@ -1,0 +1,28 @@
+# The installable: `pip install griot-parcel` puts the `parcel` command on PATH. The wheel
+# carries the compiled crates/parcel-cli binary and nothing else, so it needs no Python at
+# run time; pip is only the delivery. (`parcel` and `parcel-cli` are taken on PyPI.)
+[build-system]
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "griot-parcel"
+description = "The parcel command line: data contracts in CEL, compiled into query plans"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+dynamic = ["version"]
+keywords = ["data contracts", "cel", "datafusion", "data quality"]
+classifiers = [
+    "Environment :: Console",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+]
+
+[project.urls]
+Repository = "https://github.com/griot-cloud/parcel"
+Documentation = "https://griot-cloud.github.io/parcel"
+
+[tool.maturin]
+manifest-path = "crates/parcel-cli/Cargo.toml"
+bindings = "bin"
