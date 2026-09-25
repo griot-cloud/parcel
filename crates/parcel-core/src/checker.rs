@@ -115,7 +115,7 @@ impl Checker<'_, '_> {
             LiteralValue::Null => {
                 return self.err(
                     Code::OutsideProfile,
-                    "`null` is not in the parcel profile; test presence with has(row.<column>)",
+                    "`null` is allowed only as a branch of `?:` (`cond ? row.x : null`); test presence with has(row.<column>)",
                 );
             }
         };
@@ -412,11 +412,33 @@ impl Checker<'_, '_> {
                 Some(TExpr::new(ExprKind::Neg(Box::new(x)), ty))
             }
             operators::CONDITIONAL => {
-                let (a, b, d) = (
-                    self.expr(&c.args[0]),
-                    self.expr(&c.args[1]),
-                    self.expr(&c.args[2]),
-                );
+                // `null` as one branch takes the other branch's type: `cond ? row.x : null`.
+                let is_null = |x: &IdedExpr| matches!(&x.expr, Expr::Literal(LiteralValue::Null));
+                let (a, b, d) = match (is_null(&c.args[1]), is_null(&c.args[2])) {
+                    (true, true) => {
+                        return self.err(Code::TypeMismatch, "both branches of `?:` are null");
+                    }
+                    (true, false) => {
+                        let (a, d) = (self.expr(&c.args[0]), self.expr(&c.args[2]));
+                        let d = d?;
+                        (
+                            a,
+                            Some(TExpr::new(ExprKind::Lit(Lit::Null), d.ty.clone())),
+                            Some(d),
+                        )
+                    }
+                    (false, true) => {
+                        let (a, b) = (self.expr(&c.args[0]), self.expr(&c.args[1]));
+                        let b = b?;
+                        let n = TExpr::new(ExprKind::Lit(Lit::Null), b.ty.clone());
+                        (a, Some(b), Some(n))
+                    }
+                    (false, false) => (
+                        self.expr(&c.args[0]),
+                        self.expr(&c.args[1]),
+                        self.expr(&c.args[2]),
+                    ),
+                };
                 let (a, b, d) = (a?, b?, d?);
                 self.expect(&a, &Type::Bool, "condition of `?:`")?;
                 // A literal branch takes the decimal type of the other branch.

@@ -43,6 +43,8 @@ pub enum ShapeOp {
         sensitivity: f64,
         epsilon: f64,
         budget: String,
+        /// Where the noise goes: on aggregates over the column, or on each value.
+        at: NoiseAt,
     },
     Suppress {
         k: u64,
@@ -51,6 +53,16 @@ pub enum ShapeOp {
         fraction: f64,
         key: String,
     },
+}
+
+/// Where `noise` adds Laplace noise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoiseAt {
+    /// To every aggregate over the column; the column cannot be read outside an aggregate.
+    Aggregate,
+    /// To each value as it leaves the view, so any query over it sees noised values.
+    Row,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -991,7 +1003,7 @@ fn classify_rule(
 fn shape_op(r: &ShapeRule, exposed: &[ExposedColumn]) -> Result<ShapeOp, String> {
     let p = &r.params;
     let allowed: &[&str] = match r.operator.as_str() {
-        "noise" => &["sensitivity", "epsilon", "budget"],
+        "noise" => &["sensitivity", "epsilon", "budget", "at"],
         "suppress" => &["k"],
         "sample" => &["fraction", "key"],
         other => {
@@ -1029,11 +1041,28 @@ fn shape_op(r: &ShapeRule, exposed: &[ExposedColumn]) -> Result<ShapeOp, String>
             if !(sensitivity > 0.0 && epsilon > 0.0) {
                 return Err("`noise` needs sensitivity > 0 and epsilon > 0".into());
             }
+            let at = match p.get("at").map(|v| v.as_str()) {
+                None | Some(Some("aggregate")) => NoiseAt::Aggregate,
+                Some(Some("row")) => NoiseAt::Row,
+                _ => return Err("`noise` takes `at: aggregate` (the default) or `at: row`".into()),
+            };
+            let numeric = exposed.iter().any(|e| {
+                e.name == column
+                    && (e.data_type.is_numeric()
+                        || matches!(
+                            e.data_type,
+                            datafusion_common::arrow::datatypes::DataType::Decimal128(..)
+                        ))
+            });
+            if !numeric {
+                return Err(format!("`noise` needs a numeric column; `{column}` is not"));
+            }
             ShapeOp::Noise {
                 column,
                 sensitivity,
                 epsilon,
                 budget: text("budget")?,
+                at,
             }
         }
         "suppress" => {

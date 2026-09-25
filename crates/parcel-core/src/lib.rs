@@ -37,9 +37,10 @@ pub mod odcs;
 pub mod registry;
 pub mod translate;
 pub mod types;
+pub mod udfs;
 
 pub use check::{
-    CheckedContract, CheckedExpr, CheckedRule, ShapeOp, check_contract, contract_hash,
+    CheckedContract, CheckedExpr, CheckedRule, NoiseAt, ShapeOp, check_contract, contract_hash,
 };
 pub use compile::{
     Compilation, CompiledContract, ValidationPlan, WritePlan, compile, compile_with,

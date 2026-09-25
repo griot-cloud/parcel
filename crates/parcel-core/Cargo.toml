@@ -23,6 +23,7 @@ datafusion-functions-aggregate = { version = "55.1.0", default-features = false 
 datafusion-functions-nested = "55.1.0"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
 schemars = "1.2"
+rand = "0.9"
 
 [dev-dependencies]
 chrono = "0.4.45"

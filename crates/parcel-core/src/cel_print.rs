@@ -235,6 +235,7 @@ fn write_lit(l: &Lit, style: Style, o: &mut String) {
                 o.push_str(&decimal_text(*unscaled, *scale));
             }
         }
+        Lit::Null => o.push_str("null"),
         Lit::Bool(b) => o.push_str(if *b { "true" } else { "false" }),
         Lit::Int(i) => {
             // i64::MIN has no positive literal; CEL parses `-9223372036854775808` as one token.

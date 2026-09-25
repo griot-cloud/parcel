@@ -219,6 +219,22 @@ fn rejections() {
             r#"{id: a, op: shape, operator: sample, params: {fraction: 0.1, key: nope}}"#,
             ShapeParams,
         ),
+        (
+            r#"{id: a, op: shape, operator: noise, column: amount_cents, params: {sensitivity: 1, epsilon: 0.5, budget: b, at: cell}}"#,
+            ShapeParams,
+        ),
+        (
+            r#"{id: a, op: shape, operator: noise, column: email, params: {sensitivity: 1, epsilon: 0.5, budget: b}}"#,
+            ShapeParams,
+        ),
+        (
+            r#"{id: a, op: transform, column: email, expr: "ctx.tenant == 'a' ? null : null"}"#,
+            TypeMismatch,
+        ),
+        (
+            r#"{id: a, op: admit, expr: "row.email == null"}"#,
+            OutsideProfile,
+        ),
     ];
     let mut failures = Vec::new();
     for (rule, want) in cases {

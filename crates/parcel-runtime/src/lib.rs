@@ -12,6 +12,7 @@
 //! - [`bundle`]: the portable compiled artifact, verified by recompiling.
 //! - [`differential`]: interpreter against DataFusion, row by row (`parcel check`).
 //! - [`export`]: the validation plan as SQL or Substrait for other engines.
+//! - [`shape`]: `suppress` and aggregate `noise` as rewrites of a caller's plan.
 //!
 //! It contains no compiler and no engine: it stores nothing and plans no queries.
 //! peQL is the runtime that does.
@@ -21,6 +22,7 @@ pub mod differential;
 pub mod export;
 pub mod plan;
 pub mod reference;
+pub mod shape;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
@@ -38,6 +40,9 @@ pub struct Caller {
     pub tier: String,
     #[serde(default)]
     pub clearance: i64,
+    /// The data classification the caller is cleared for, e.g. `internal` or `restricted`.
+    #[serde(default)]
+    pub classification: String,
     #[serde(default)]
     pub roles: Vec<String>,
     /// Fixed once per query. Defaults to the time the caller is created.
@@ -56,6 +61,7 @@ impl Caller {
             purpose: purpose.into(),
             tier: String::new(),
             clearance: 0,
+            classification: String::new(),
             roles: Vec::new(),
             now: Utc::now(),
             other: Default::default(),

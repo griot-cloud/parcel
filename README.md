@@ -123,8 +123,11 @@ parcel accepts a strict subset of CEL. Anything it cannot translate faithfully i
 - **Timestamp accessors:** `getFullYear`, `getMonth`, `getDayOfMonth`, `getDayOfWeek`, `getDayOfYear`, `getHours`, `getMinutes`, `getSeconds`.
 - **Presence:** `has(row.col)`.
 - **Macros over lists:** `exists`, `all`, `filter`, `map`, which compile to DataFusion lambdas.
-- **Registry functions:** `hash_sha256`, `redact`, `is_msisdn`, `is_email`.
-- **Nulls:** a null in a row field a rule reads makes an `admit` or `assert` false and a `transform` null. `has()` is how a rule tests for presence.
+- **Registry functions:** `hash_sha256`, `redact` (a fixed `***`, so the length is not revealed), `partial(value, n)` (`***` and the last `n` characters; fully masked when the value is no longer than `n`), `is_msisdn`, `is_email`.
+- **Caller context:** `ctx.id`, `tenant`, `purpose`, `tier`, `clearance`, `classification`, `roles`, `now`, and `ctx.other.<field>`.
+- **Nulls:** a null in a row field a rule reads makes an `admit` or `assert` false and a `transform` null. `has()` is how a rule tests for presence. `null` may be written as one branch of `?:` (`ctx.clearance > 2 ? row.salary : null`) and takes the other branch's type.
+- **Retyping:** a transform may change a column's type when `expose` declares the new one, e.g. `expose: {name: amount, type: utf8}` with `hash_sha256(string(row.amount))`.
+- **Noise:** `shape: noise` adds Laplace noise either to aggregates over a column (`at: aggregate`, the default) or to each value (`at: row`).
 
 ## License
 

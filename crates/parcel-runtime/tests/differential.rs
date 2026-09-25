@@ -186,6 +186,9 @@ expose:
   - {name: name, type: utf8}
   - {name: phone, type: utf8}
   - {name: score, type: float64}
+  - {name: n, type: utf8}
+  - {name: tenant, type: utf8}
+  - {name: u, type: uint32}
 rules:
   # admits mixing row and ctx
   - {id: a_tenant, op: admit, expr: "row.tenant == ctx.tenant || 'admin' in ctx.roles"}
@@ -230,6 +233,12 @@ rules:
   - {id: x_mask, op: transform, column: name, expr: "ctx.tenant == 'acme' ? row.name : hash_sha256(row.name)"}
   - {id: x_redact, op: transform, column: phone, expr: "redact(row.phone)"}
   - {id: x_score, op: transform, column: score, expr: "row.score * 100.0"}
+  # a number exposed as text: in clear for cleared callers, partly masked for others
+  - {id: x_retype, op: transform, column: n, expr: "ctx.clearance >= 2 ? string(row.n) : partial(string(row.n), 2)"}
+  # null for callers without the classification
+  - {id: x_null, op: transform, column: tenant, expr: "ctx.classification == 'restricted' ? row.tenant : null"}
+  - {id: x_null_left, op: transform, column: u, expr: "'admin' in ctx.roles ? null : row.u"}
+  - {id: s_partial, op: assert, expr: "partial(row.phone, 4).endsWith('5678')", on_fail: report}
 "#;
 
 fn callers() -> Vec<Caller> {
@@ -238,6 +247,7 @@ fn callers() -> Vec<Caller> {
         .with_roles(&["admin"])
         .at(now);
     high.clearance = 3;
+    high.classification = "restricted".into();
     vec![
         Caller::new("a", "acme", "analytics").at(now),
         high,

@@ -272,6 +272,7 @@ impl Registry {
                 Cost::Moderate,
             ),
             FunctionEntry::builtin("redact", 1, vec![sig(&[String], String)], Cost::Cheap),
+            FunctionEntry::builtin("partial", 1, vec![sig(&[String, Int], String)], Cost::Cheap),
             FunctionEntry::builtin("is_msisdn", 1, vec![sig(&[String], Bool)], Cost::Cheap),
             FunctionEntry::builtin("is_email", 1, vec![sig(&[String], Bool)], Cost::Cheap),
         ] {

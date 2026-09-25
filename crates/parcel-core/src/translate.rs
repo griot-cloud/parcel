@@ -127,6 +127,9 @@ impl Translator<'_> {
             return Ok(column(col));
         }
         Ok(match &e.kind {
+            ExprKind::Lit(Lit::Null) => {
+                lit(ScalarValue::try_from(&e.ty.to_arrow()).map_err(|x| x.to_string())?)
+            }
             ExprKind::Lit(l) => lit(lit_value(l)),
             ExprKind::Var(Var::Row(c)) => self.row(c, &e.ty)?,
             ExprKind::Var(Var::RowOther(f)) => other_field(f),
@@ -292,12 +295,28 @@ impl Translator<'_> {
 
 /// The DataFusion expression for each registry built-in (design 7.3).
 pub fn builtin_function(name: &str, mut args: Vec<Expr>) -> TResult {
+    if name == "partial" && args.len() == 2 {
+        // The last n characters behind `***`; a value no longer than n is fully masked.
+        let n = args.pop().expect("two arguments");
+        let x = args.pop().expect("two arguments");
+        return datafusion_expr::when(
+            binary_expr(
+                cast(f::character_length(x.clone()), DataType::Int64),
+                Operator::Gt,
+                n.clone(),
+            ),
+            f::concat(vec![lit(REDACTED), f::right(x, n)]),
+        )
+        .otherwise(lit(REDACTED))
+        .map_err(|e| e.to_string());
+    }
     let x = args
         .pop()
         .ok_or_else(|| format!("`{name}` needs an argument"))?;
     Ok(match name {
         "hash_sha256" => f::encode(f::sha256(x), lit("hex")),
-        "redact" => f::repeat(lit("*"), cast(f::character_length(x), DataType::Int64)),
+        // A fixed token: the length of the value is not revealed.
+        "redact" => lit(REDACTED),
         "is_msisdn" => f::regexp_like(x, lit(MSISDN_PATTERN), None),
         "is_email" => f::regexp_like(x, lit(EMAIL_PATTERN), None),
         other => {
@@ -307,6 +326,9 @@ pub fn builtin_function(name: &str, mut args: Vec<Expr>) -> TResult {
         }
     })
 }
+
+/// What `redact` gives, and what `partial` puts in front of the characters it keeps.
+pub const REDACTED: &str = "***";
 
 /// Kenyan mobile numbers in international form without `+`: 254 then 7xx or 1xx.
 pub const MSISDN_PATTERN: &str = "^254[17][0-9]{8}$";
@@ -441,6 +463,7 @@ pub fn lit_value(l: &Lit) -> ScalarValue {
         Lit::Double(d) => ScalarValue::Float64(Some(*d)),
         Lit::String(s) => ScalarValue::Utf8(Some(s.clone())),
         Lit::Bytes(b) => ScalarValue::Binary(Some(b.clone())),
+        Lit::Null => ScalarValue::Null,
         Lit::Decimal { unscaled, scale } => ScalarValue::Decimal128(
             Some(*unscaled as i128),
             crate::types::DECIMAL_PRECISION,

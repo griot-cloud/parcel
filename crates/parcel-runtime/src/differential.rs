@@ -193,7 +193,9 @@ pub async fn differential(
                         row: Some(row.clone().into()),
                         pins: cc.functions.clone(),
                     };
-                    reference::eval(&item.cel, &reference::context(&scope)).map(Some)
+                    reference::eval(&item.cel, &reference::context(&scope))
+                        // A CEL `null` result is a SQL null.
+                        .map(|v| (!matches!(v, Value::Null)).then_some(v))
                 };
                 let got = actual.get(i).cloned().unwrap_or(Err("missing row".into()));
                 if expected.is_err() && got.is_err() {

@@ -2843,6 +2843,7 @@ dependencies = [
  "datafusion-functions-nested",
  "hex",
  "jsonschema",
+ "rand",
  "regex-syntax",
  "schemars 1.2.2",
  "serde",

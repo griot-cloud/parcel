@@ -267,8 +267,9 @@ pub fn session_with(c: &Compilation, registry: &Registry) -> SessionContext {
 /// A session with parcel's own functions registered, for decoding.
 pub fn session() -> SessionContext {
     let ctx = SessionContext::new();
-    ctx.register_udf(parcel_core::translate::bytes_len_udf());
-    ctx.register_udf(parcel_core::translate::bytes_len_udf());
+    for udf in parcel_core::udfs::parcel_udfs() {
+        ctx.register_udf(udf);
+    }
     ctx
 }
 

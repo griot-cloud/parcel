@@ -75,7 +75,7 @@ The executing agent re-verifies every row before acting on it.
 
 - **S1. No lost behaviour.** Every behaviour row of the ledger (§5.1) is re-expressed through parcel or kept in the runtime. The graph layer is the only removal, and it is replaced by a documented recursive-SQL pattern that passes the wall tests (S8).
 - **S2. Same answers.** 0.3's behavioural tests are ported to parcel contracts and pass: masking outputs byte for byte, row filtering, projection hiding, owner-sees-raw, purpose denial, DP noise and budget exhaustion, and the DDL guard.
-- **S3. One policy language.** peQL 0.4 contains no rule evaluator other than parcel's compiled expressions and parcel-runtime's interpreter. `ResolvedPolicy`, `MaskAction`, `RowFilterExec`, `MaskingExec`, `ContractApprovedExec` and `optimizer_rules/` no longer exist.
+- **S3. One policy language.** peQL 0.4 contains no rule evaluator and no shape logic other than parcel's compiled expressions, `parcel_runtime::shape` and parcel-runtime's interpreter. `ResolvedPolicy`, `MaskAction`, `RowFilterExec`, `MaskingExec`, `ContractApprovedExec`, `LaplaceNoiseExec`, `PrivacyBudgetTracker`'s parameter validation and `optimizer_rules/` no longer exist.
 - **S4. Pushdown works.** For Parquet bindings, an admit on a partition column prunes files, a safe caller predicate reaches the Parquet scan, and a transform on an unselected column is absent from the physical plan. Each is asserted on `EXPLAIN` output.
 - **S5. Enforcement can be checked.** The engine refuses to execute any physical plan that lacks a gate for every contract in the query. A hand-built ungated plan is refused in a test.
 - **S6. The full lifecycle runs:**
@@ -145,10 +145,10 @@ Two things cross the line. **Artifacts** travel as a bundle file or as Rust valu
 | Owner sees raw values | `transform: ctx.tenant == owner ? row.c : …` and `admit: … \|\| ctx.tenant == owner` | owners are an ordinary rule, so "owner plus auditors" is one more condition |
 | Column projection (`columns`) | `expose` | unexposed columns do not exist for the caller, even in `WHERE` |
 | Row filter (`row_filter`, SQL string) | `admit` in CEL | type-checked at compile time; pushed into the scan; prunes partitions and row groups |
-| Masks `redact`, `hash_sha256`, `tokenize`, `partial`, `null` (`MaskingExec`) | built-ins `redact`, `hash_sha256`, `tokenize`, `mask_partial`, and `null` in transforms | a projection the optimiser prunes when the column is unselected; per-caller, folded away for callers who see raw |
+| Masks `redact`, `hash_sha256`, `tokenize`, `partial`, `null` (`MaskingExec`) | `transform` rules over built-ins: `redact` (fixed `***`), `hash_sha256`, `partial(value, n)`, and `cond ? row.x : null`. `tokenize` was an alias of SHA-256 and is `hash_sha256` | a projection the optimiser prunes when unselected, folded away for callers who see raw. `redact` no longer depends on value length, `partial` no longer reveals values of 4 characters or fewer, and `null` is a real null instead of 0.3's empty string |
 | Hashing a numeric column to text | a transform may retype to `utf8` when `expose` declares `utf8` | the type is declared in the contract, not inferred by an operator |
-| Row-level DP noise with a permissive budget (`LaplaceNoiseExec`, `dp_columns`) | `shape: noise` with `at: row`, executed by `LaplaceNoiseExec` above the gate | budgets are charged once per query per budget; the permissive mode is an explicit store setting |
-| (new) aggregate-level DP | `shape: noise` with `at: aggregate` | noise on aggregate outputs; refuses reads outside aggregates |
+| Row-level DP noise with a permissive budget (`LaplaceNoiseExec`, `dp_columns`) | `shape: noise` with `at: row`, compiled by parcel into the view's projection (`parcel_laplace`), with `unless` a bound parameter. `LaplaceNoiseExec` is deleted | noise is part of the plan; the budget is charged once per query, only when the query reads the column; the permissive mode is an explicit store setting |
+| (new) aggregate-level DP | `shape: noise` with `at: aggregate`: a rewrite of the caller's plan in `parcel_runtime::shape` | noise on aggregate outputs; refuses reads outside aggregates and grouping by the column |
 | DP budget tracker | budget store trait with in-memory and file implementations | survives restarts |
 | Deny without an existence oracle | contract store visibility (§5.3) | also covers unpublished contracts |
 | `DdlGuard` | kept, plus `SQLOptions` and an `EXPLAIN` refusal | closes the plan-level bypasses parcel's executor found (DDL, `EXPLAIN`, `UNION` branch, scalar subquery) |
@@ -167,13 +167,18 @@ Two things cross the line. **Artifacts** travel as a bundle file or as Rust valu
 
 ### 5.2 Changes to parcel
 
-These are made before peQL's core work:
+Everything here is expressed in parcel's own terms: rules, CEL, built-ins, and the compiled artifacts.
 
-1. **`tokenize(x)` and `mask_partial(x)` built-ins, and `null` in transforms.** Outputs match `MaskingExec` byte for byte. The differential test covers them.
-2. **Retyping transforms.** A transform may produce `utf8` for a non-string column when its `expose` entry says `utf8`.
-3. **`noise` modes**: `params.at` is `row` or `aggregate`, and the default is `aggregate`.
-4. **`Caller.classification`**, exposed as `ctx.classification`.
-5. **Fixes found on the way:** `bundle::session()` registers `bytes_len` twice.
+1. **Built-in `partial(value, n)`.** `redact` returns a fixed `***`.
+2. **`null` as a `?:` branch.** It takes the other branch's type.
+3. **Retyping transforms.** A transform may produce `utf8` for a non-string column when `expose` declares `utf8`. The checker already allowed this, and tests now cover it.
+4. **`Caller.classification`**, available to rules as `ctx.classification`.
+5. **Shapes.**
+   - `noise` gains `at: row | aggregate`, and requires a numeric column.
+   - `sample` and row-level noise compile into the view, using `parcel_core::udfs`.
+   - `suppress` and aggregate noise are rewrites in `parcel_runtime::shape`.
+   - `parcel_runtime::plan::active_shapes` evaluates `unless`.
+6. **A fix found on the way:** `bundle::session()` registered `bytes_len` twice.
 
 ### 5.3 Contract store and visibility
 
@@ -190,11 +195,17 @@ Absent and invisible give the same error.
 
 ### 5.4 Shapes
 
-`suppress` (drop groups under `k`, in every aggregate including `UNION` branches and subqueries) and `sample` (a stable key-hashed fraction) are ported from `d9a059e`. `noise` has two modes:
-- **`at: row`**: `LaplaceNoiseExec`, reused from 0.3 including its sampling (difference of two `Exp(1)` draws), sits directly above the gate on the named column.
-- **`at: aggregate`**: noise goes on aggregate outputs. Grouping by the noised column, or reading it outside an aggregate, is refused.
+Every shape is defined in parcel. peQL only charges budgets.
 
-Both charge the budget store once per query per budget.
+- **In the view, compiled by parcel:**
+  - `sample` becomes a filter: `unless OR parcel_sample_bucket(key) < fraction`.
+  - `noise at: row` becomes a projection: `CASE WHEN unless THEN col ELSE col + parcel_laplace(scale) END`, rounded back for integers.
+  - `unless` is a bound `ctx` parameter, so the optimiser removes whichever branch does not apply to the caller.
+  - The functions live in `parcel_core::udfs`, and every engine registers them.
+- **On the caller's plan, by `parcel_runtime::shape::apply`:**
+  - `suppress` drops groups under `k` in every aggregate, including `UNION` branches and subqueries. A query with no aggregate is one group.
+  - `noise at: aggregate` noises aggregate outputs, and refuses reads outside aggregates and grouping by the column.
+- **Charges:** `apply` returns them, one per budget at the largest epsilon, and only for noised columns the optimised plan reads. peQL charges them before execution and refuses the query when a budget is spent.
 
 ### 5.5 Graphs, outside the engine
 
@@ -270,7 +281,7 @@ The two projects move DataFusion versions together, parcel first. Both documenta
 All work goes on `main` of each repository. Each gate names the criteria it proves.
 
 1. **parcel changes (§5.2).** *Gate: parcel's tests and the differential test pass, including the new built-ins.*
-2. **peQL rebuilt on DataFusion 55.** Delete the superseded modules (the ledger's deleted rows and `graph/`). Upgrade the kept ones (`LaplaceNoiseExec`, `ScanMetricsExec`, `AttestationExec`, `DdlGuard`, cache, pool, formatter, platform, lance). *Gate: the kept modules' tests pass (S9, partly).*
+2. **peQL rebuilt on DataFusion 55.** Delete every module the ledger replaces with parcel (including `LaplaceNoiseExec` and `graph/`). Rewrite the runtime pieces against parcel's artifacts (`ScanMetricsExec`, `AttestationExec`, `DdlGuard`, cache, pool, formatter, platform, lance). *Gate: the kept modules' tests pass (S9, partly).*
 3. **Core runtime.** Build the contract store, resolver, view builder, gate, shapes, envelope, audit and `Engine`. Port 0.3's behavioural tests to parcel contracts. *Gate: S2, S3, S4, S5.*
 4. **Lifecycle.** Build the write path, manifests, validation, function store, budget store and bundle registration. Port parcel's tests from `d9a059e`. *Gate: S6, S7.*
 5. **Graph pattern.** Add the documented recursive-SQL pattern and a wall test. *Gate: S8.*

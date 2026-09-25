@@ -13,7 +13,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::cel_print::{Style, print};
-use crate::check::{CheckedContract, CheckedRule, ShapeOp};
+use crate::check::{CheckedContract, CheckedRule, NoiseAt, ShapeOp};
 use crate::diag::{Code, Diagnostic};
 use crate::document::{AssertOnFail, Binding, ContractDoc, GuaranteeOnFail};
 use crate::hash;
@@ -276,6 +276,8 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
     let mut transforms = Vec::new();
     let mut guarantees = Vec::new();
     let mut shapes = Vec::new();
+    // `noise at: row`: (column, scale, unless), applied to the projection below.
+    let mut row_noise: Vec<(String, f64, Option<Expr>)> = Vec::new();
     let mut report = Vec::new();
     let mut row_rules = Vec::new();
 
@@ -459,12 +461,58 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
                     shape: shape.clone(),
                     unless: unless.as_ref().map(|u| print(&u.expr, Style::Reference)),
                 });
-                (
-                    "shape",
-                    Tier::Operator,
-                    "a physical operator above the gate; the one cost the optimiser cannot reduce"
-                        .to_owned(),
-                )
+                // `unless` reads only ctx, so it becomes a parameter the optimiser folds.
+                let unless_expr = match unless {
+                    Some(u) => Some(t.predicate(&u.expr).map_err(at)?),
+                    None => None,
+                };
+                match shape {
+                    ShapeOp::Sample { fraction, key } => {
+                        let keep = crate::udfs::sample_predicate(column(key), *fraction);
+                        let keep = match unless_expr {
+                            Some(u) => u.or(keep),
+                            None => keep,
+                        };
+                        admits.push((id.clone(), keep.clone()));
+                        admits_stored.push((id.clone(), keep));
+                        (
+                            "shape",
+                            Tier::ScanFilter,
+                            format!(
+                                "keeps a stable {}% of rows keyed on `{key}`; a filter in the view",
+                                fraction * 100.0
+                            ),
+                        )
+                    }
+                    ShapeOp::Noise {
+                        column: col,
+                        sensitivity,
+                        epsilon,
+                        at: NoiseAt::Row,
+                        ..
+                    } => {
+                        row_noise.push((col.clone(), sensitivity / epsilon, unless_expr));
+                        (
+                            "shape",
+                            Tier::Projection,
+                            format!(
+                                "adds Laplace noise to each `{col}` value in the view; the budget is charged once per query that reads `{col}`"
+                            ),
+                        )
+                    }
+                    ShapeOp::Noise { column: col, .. } => (
+                        "shape",
+                        Tier::Operator,
+                        format!(
+                            "adds Laplace noise to aggregates over `{col}`; `{col}` cannot be read outside an aggregate"
+                        ),
+                    ),
+                    ShapeOp::Suppress { k } => (
+                        "shape",
+                        Tier::Operator,
+                        format!("removes groups of fewer than {k} rows from every aggregate"),
+                    ),
+                }
             }
         };
         // Name the stored subtrees this rule reads instead of evaluating.
@@ -516,6 +564,21 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
         let stored = match transforms_stored.iter().find(|(col, _)| *col == e.name) {
             Some((_, t)) => cast(t.clone(), e.data_type.clone()),
             None => live.clone(),
+        };
+        let (live, stored) = match row_noise.iter().find(|(c, ..)| *c == e.name) {
+            Some((_, scale, unless)) => {
+                let wrap = |p: Expr| {
+                    let noisy = crate::udfs::noised(p.clone(), *scale, &e.data_type);
+                    match unless {
+                        Some(u) => datafusion_expr::when(u.clone(), p)
+                            .otherwise(noisy)
+                            .expect("a single-branch CASE is well formed"),
+                        None => noisy,
+                    }
+                };
+                (wrap(live), wrap(stored))
+            }
+            None => (live, stored),
         };
         projection.push((e.name.clone(), live));
         projection_stored.push((e.name.clone(), stored));

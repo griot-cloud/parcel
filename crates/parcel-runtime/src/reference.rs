@@ -77,6 +77,7 @@ pub fn ctx_value(c: &Caller) -> Value {
     m.insert("purpose".into(), string(&c.purpose));
     m.insert("tier".into(), string(&c.tier));
     m.insert("clearance".into(), Value::Int(c.clearance));
+    m.insert("classification".into(), string(&c.classification));
     m.insert(
         "roles".into(),
         Value::List(Arc::new(c.roles.iter().map(|r| string(r)).collect())),
@@ -134,8 +135,17 @@ pub fn context(scope: &Scope) -> Context<'static> {
             _ => String::new(),
         }
     });
-    c.add_function("redact", |s: Arc<String>| -> String {
-        "*".repeat(s.chars().count())
+    c.add_function("redact", |_s: Arc<String>| -> String {
+        parcel_core::translate::REDACTED.to_owned()
+    });
+    c.add_function("partial", |s: Arc<String>, n: i64| -> String {
+        let chars: Vec<char> = s.chars().collect();
+        let redacted = parcel_core::translate::REDACTED;
+        if n < 0 || chars.len() as i64 <= n {
+            return redacted.to_owned();
+        }
+        let tail: String = chars[chars.len() - n as usize..].iter().collect();
+        format!("{redacted}{tail}")
     });
     c.add_function("is_msisdn", |s: Arc<String>| -> bool {
         msisdn_re().is_match(&s)
@@ -323,6 +333,12 @@ mod tests {
         assert!(eval_bool("'admin' in ctx.roles && ctx.tenant == 'acme'", &ctx).unwrap());
         assert_eq!(eval("parcel_strlen('héllo')", &ctx).unwrap(), Value::Int(5));
         assert_eq!(eval("redact('abc')", &ctx).unwrap(), string("***"));
+        assert_eq!(eval("redact('abcdefgh')", &ctx).unwrap(), string("***"));
+        assert_eq!(
+            eval("partial('0712345678', 4)", &ctx).unwrap(),
+            string("***5678")
+        );
+        assert_eq!(eval("partial('5678', 4)", &ctx).unwrap(), string("***"));
         assert!(eval_bool("is_msisdn('254712345678')", &ctx).unwrap());
         assert!(!eval_bool("is_email('nope')", &ctx).unwrap());
         assert_eq!(

@@ -59,7 +59,9 @@ pub struct Verdict {
 /// A session with parcel's own functions registered.
 pub fn session() -> SessionContext {
     let ctx = SessionContext::new();
-    ctx.register_udf(parcel_core::translate::bytes_len_udf());
+    for udf in parcel_core::udfs::parcel_udfs() {
+        ctx.register_udf(udf);
+    }
     ctx
 }
 
@@ -232,6 +234,29 @@ pub fn refusal(cc: &CompiledContract, caller: &Caller) -> Result<Option<String>>
         }
     }
     Ok(None)
+}
+
+/// The shape rules that apply to this caller: those whose `unless` does not hold.
+pub fn active_shapes<'a>(
+    cc: &'a CompiledContract,
+    caller: &Caller,
+) -> Result<Vec<&'a parcel_core::compile::ShapeRule>> {
+    let ctx = reference::context(&Scope {
+        ctx: Some(reference::ctx_value_typed(caller, &cc.ctx_other)),
+        pins: cc.functions.clone(),
+        ..Default::default()
+    });
+    let mut out = Vec::new();
+    for s in &cc.shapes {
+        let skip = match &s.unless {
+            Some(u) => reference::eval_bool(u, &ctx)?,
+            None => false,
+        };
+        if !skip {
+            out.push(s);
+        }
+    }
+    Ok(out)
 }
 
 /// The `dataset` namespace from stored statistics (a verdict's `stats`) and write metadata.

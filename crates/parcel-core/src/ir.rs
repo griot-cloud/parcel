@@ -81,17 +81,19 @@ pub enum CtxField {
     Purpose,
     Tier,
     Clearance,
+    Classification,
     Roles,
     Now,
 }
 
 impl CtxField {
-    pub const ALL: [CtxField; 7] = [
+    pub const ALL: [CtxField; 8] = [
         CtxField::Id,
         CtxField::Tenant,
         CtxField::Purpose,
         CtxField::Tier,
         CtxField::Clearance,
+        CtxField::Classification,
         CtxField::Roles,
         CtxField::Now,
     ];
@@ -103,6 +105,7 @@ impl CtxField {
             CtxField::Purpose => "purpose",
             CtxField::Tier => "tier",
             CtxField::Clearance => "clearance",
+            CtxField::Classification => "classification",
             CtxField::Roles => "roles",
             CtxField::Now => "now",
         }
@@ -184,6 +187,8 @@ pub enum Lit {
     Double(f64),
     String(String),
     Bytes(Vec<u8>),
+    /// `null`, allowed only as a branch of `?:`; its type is the other branch's.
+    Null,
     /// An exact decimal: `unscaled / 10^scale`.
     Decimal {
         unscaled: i64,
