@@ -89,6 +89,8 @@ jobs:
     needs: version
     if: needs.version.outputs.release == 'true'
     strategy:
+      # Every platform reports; the release still needs all of them.
+      fail-fast: false
       matrix:
         include:
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, native: true }
@@ -106,12 +108,27 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: protoc (for the substrait feature)
+        # One pinned release everywhere: the distributions' packages lag (Ubuntu 22.04 ships
+        # 3.12, which rejects the proto3 `optional` fields substrait uses).
         run: |
-          case "$RUNNER_OS" in
-            Linux) sudo apt-get update && sudo apt-get install -y protobuf-compiler ;;
-            macOS) brew install protobuf ;;
-            Windows) choco install protoc -y --no-progress ;;
+          v=29.3
+          case "$RUNNER_OS-$(uname -m)" in
+            Linux-x86_64) asset=linux-x86_64 ;;
+            Linux-aarch64) asset=linux-aarch_64 ;;
+            macOS-*) asset=osx-universal_binary ;;
+            Windows-*) asset=win64 ;;
           esac
+          curl -fsSL -o "$RUNNER_TEMP/protoc.zip" \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v$v/protoc-$v-$asset.zip"
+          dir="$RUNNER_TEMP/protoc"
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z x -y -o"$dir" "$RUNNER_TEMP/protoc.zip" >/dev/null
+            echo "PROTOC=$(cygpath -w "$dir/bin/protoc.exe")" >> "$GITHUB_ENV"
+          else
+            unzip -q -o "$RUNNER_TEMP/protoc.zip" -d "$dir"
+            echo "PROTOC=$dir/bin/protoc" >> "$GITHUB_ENV"
+          fi
+          "$dir/bin/protoc" --version
       - name: Build
         run: cargo build --release --locked -p parcel-cli --features substrait --target ${{ matrix.target }}
       - name: The binary runs before it is published
