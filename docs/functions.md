@@ -1,10 +1,10 @@
-# Your own functions, in WebAssembly
+# Custom functions
 
-A tenant can extend the rule language with functions written in Rust and compiled to
-WebAssembly. A module imports nothing, so it has no clock, randomness or I/O; it runs under fuel
-and memory limits; and it is checked with a smoke batch when it is loaded. Contracts pin a
-function by hash, so a later version never changes an existing contract. DataFusion and the CEL
-interpreter call the same module, so there is no second implementation to drift.
+Use a WebAssembly function when a rule needs a domain-specific check that the built-ins do not provide. For example, a utility might require a meter serial to be `MK` followed by ten digits.
+
+## Write and build the function
+
+The repository includes a complete Rust crate in `examples/udf-meter-serial`. Its function is exported using `parcel-udf`:
 
 ```rust
 parcel_udf::export! {
@@ -14,11 +14,14 @@ parcel_udf::export! {
 }
 ```
 
+From the repository root:
+
 ```bash
-cargo build --release --target wasm32-unknown-unknown
+rustup target add wasm32-unknown-unknown
+cargo build --release --target wasm32-unknown-unknown --manifest-path examples/udf-meter-serial/Cargo.toml
 ```
 
-A manifest describes it:
+The module is written under that example's `target/wasm32-unknown-unknown/release/` directory. A manifest declares the function signature and execution properties:
 
 ```yaml
 name: is_meter_serial
@@ -28,12 +31,26 @@ deterministic: true
 cost: cheap
 ```
 
+## Verify and use it
+
+The utility example includes a module, its manifest and a contract that uses it. From the repository root:
+
 ```bash
-parcel function verify meter_serial.wasm --manifest is_meter_serial.yaml --owner kplc
+cd examples/utility
+parcel function verify functions/meter_serial.wasm --manifest functions/is_meter_serial.yaml --owner kplc
 parcel check contracts/tokens.yaml --data incoming/tokens.csv \
-  --function meter_serial.wasm=is_meter_serial.yaml
+  --function functions/meter_serial.wasm=functions/is_meter_serial.yaml \
+  --function functions/meter_serial.wasm=functions/units.yaml \
+  --function functions/meter_serial.wasm=functions/county.yaml \
+  --caller callers/kisumu-analyst.yaml --caller callers/admin.yaml
 ```
 
-A contract with `owner: kplc` may call `is_meter_serial(row.meter)` in any rule or enricher; a
-contract of another owner cannot. A bundle carries the modules it is pinned to, so an engine
-can verify and run it. In peQL, `peql function register` stores them in a workspace.
+This example module also exports `units` and `county`, which the contract uses for derived fields; each function has its own manifest.
+
+A contract with `owner: kplc` can call `is_meter_serial(row.meter)` after the function is loaded for that owner. Pass the same `--function` option when compiling a bundle; the bundle carries the module needed by the receiver.
+
+## Execution limits
+
+The runtime rejects modules with imports and runs accepted functions under fuel and memory limits. Loading checks the module's interface and evaluates a smoke batch. Function pins identify the implementation by hash, so changing a module requires recompilation of contracts that use the new implementation.
+
+The CEL interpreter and DataFusion use the same module. `parcel check` compares their rule results on the supplied sample.

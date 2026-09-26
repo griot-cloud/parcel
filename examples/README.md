@@ -2,6 +2,7 @@
 
 | Workspace | Shows |
 |---|---|
+| [`suppliers`](suppliers) | The documentation quickstart: four orders, two callers and a quality check. |
 | [`quickstart`](quickstart) | A three-tenant orders contract: check, what each caller sees, refusals, bundles, and an inheriting child (`sales/orders_ea`). |
 | [`utility`](utility) | A tenant's own Rust functions, compiled to WebAssembly, called from rules and enrichers. |
 | [`udf-meter-serial`](udf-meter-serial) | The source of that function module (`parcel_udf::export!`). |

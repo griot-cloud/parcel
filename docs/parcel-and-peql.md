@@ -1,22 +1,18 @@
 # parcel and peQL
 
-parcel is the language: it parses a contract, checks it against the data's schema, and compiles
-it. [peQL](https://griot-cloud.github.io/peQL/) is the runtime: it stores what parcel compiled,
-writes data under it, and answers queries through it. Nothing is implemented on both sides.
+parcel defines and compiles data contracts. [peQL](https://griot-cloud.github.io/peQL/) manages data and applies those contracts to SQL queries.
 
-| parcel | peQL |
+| Task | Where it belongs |
 | --- | --- |
-| The contract language and its checker | Contract store, versions, publication |
-| The compiler: view expressions, the validation plan, the write plan | Writing data, manifests, stored flags |
-| `parcel-runtime`: the caller, the CEL interpreter, parameter binding, `decide` and `unless` evaluation, validation over any table, shape rewrites, WebAssembly loading, bundles, SQL and Substrait export | Resolving guarantees against manifests, building views, the gate, charging budgets, the envelope, the audit log |
-| `parcel check`: a contract against a sample, in memory | `peql write`, `query`, `validate`, `publish` |
+| Define contract syntax and check expressions. | parcel compiler. |
+| Produce row filters, projections, validation and write plans. | parcel compiler. |
+| Bind caller values, evaluate rules and verify bundles. | parcel runtime libraries. |
+| Store registered contracts and control their visibility. | peQL. |
+| Write data, maintain statistics and validation results. | peQL. |
+| Apply contract rules to SQL queries and manage audit records and budgets. | peQL. |
 
-## The handoff
+peQL calls parcel's Rust libraries directly. You can register a contract document in peQL without installing the parcel CLI first.
 
-A **bundle** (`parcel compile -o contract.parcel.json`) is what crosses from one to the other.
-It carries the contract document and the documents it inherits from, the data's schema, the
-tenant functions it is pinned to, the three artifacts encoded with `datafusion-proto`, and the
-compilation hash. An engine accepts a bundle only after recompiling it and getting the same
-hash, so it runs exactly what parcel compiled or nothing.
+Use the parcel CLI when authoring and testing contracts separately from the engine. `parcel compile -o contract.parcel.json` produces a bundle that a compatible peQL version can register. The receiver recompiles and verifies its contents before using them.
 
-Both projects build on the same DataFusion version and move to a new one together, parcel first.
+For a complete data-and-query workflow, start with [peQL's quickstart](https://griot-cloud.github.io/peQL/quickstart.html). For contract syntax and rule expressions, stay in the {doc}`language` reference.

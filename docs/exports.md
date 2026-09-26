@@ -1,25 +1,33 @@
-# Run the checks in other engines
+# Export validation
 
-The validation plan is a DataFusion plan, so it can leave DataFusion.
+Export a contract's **data validation plan** to run quality checks in another engine. The export does not enforce caller access, masking or result shapes on that engine's other queries.
 
-**As SQL**, in the dialect of another engine:
+The commands below run from `examples/suppliers` after the {doc}`quickstart`.
 
-```bash
-parcel compile contracts/orders.yaml --schema incoming/orders.csv --sql duckdb --table orders
-```
-
-Dialects: `datafusion`, `duckdb`, `postgres`, `mysql`, `sqlite`, `bigquery`, `snowflake`. The
-query returns one row: `valid`, `breached`, `row_count`, a `fail__<id>` count per assertion, a
-`guarantee__<id>` per data-only guarantee, and every statistic the guarantees read. Functions
-whose meaning is verified only in DataFusion are listed as warnings. `examples/verify-duckdb.py`
-runs the DuckDB SQL in DuckDB and checks that it reproduces parcel's verdict value for value.
-
-**As Substrait**, for engines that consume it:
+## SQL
 
 ```bash
-parcel compile ... --substrait plan.bin   # build with --features substrait (needs protoc)
+parcel compile orders.yaml --schema orders.csv --sql duckdb --table orders > validation.sql
 ```
 
-**Natively**, in anything built on DataFusion: decode the plan from a bundle
-(`Bundle::validation_plan`) and run it with `parcel_runtime::plan::validate` over any table with
-the contract's columns.
+Load the data into a table named `orders` in the target engine, then execute `validation.sql`. It returns one summary row with `valid`, `breached`, `row_count`, assertion failure counts, data-only guarantee results and required statistics.
+
+Supported dialect names are `datafusion`, `duckdb`, `postgres`, `mysql`, `sqlite`, `bigquery` and `snowflake`. Read any warnings: a function's behaviour may not be verified for the chosen dialect. Test the exported query in the target engine. The repository's `examples/verify-duckdb.py` demonstrates comparing a DuckDB result with parcel's verdict.
+
+## Substrait
+
+Substrait represents a query plan as a portable binary format:
+
+```bash
+parcel compile orders.yaml --schema orders.csv --substrait validation.bin --table orders
+```
+
+The receiving engine must support the plan and required functions. Official release binaries include this option. A source build needs `protoc` and the feature enabled:
+
+```bash
+cargo build --release -p parcel-cli --features substrait
+```
+
+## DataFusion
+
+Rust applications can execute the compiled validation plan over a compatible table with `parcel_runtime::plan::validate`. See {doc}`crates` for the library entry points and {doc}`execution` for the separate compiled outputs.
