@@ -18,8 +18,19 @@ for r in &compilation.contract.report {
 let verdict = parcel_runtime::plan::validate(&compilation, compilation.validation.plan.clone(), table).await?;
 ```
 
+`validate_in` does the same in the engine's own session, so a scan can read through object
+stores the engine registered there.
+
 `parcel_runtime::plan` has the pieces an engine calls per query: `param_values` binds a caller,
 `refusal` runs `decide` rules, `active_shapes` evaluates `unless`, and `dataset_value` builds
 the `dataset` namespace from stored statistics. `parcel_runtime::shape::apply` applies
 `suppress` and aggregate `noise` to a caller's plan and returns the budget charges. Engines
 register `parcel_core::udfs::parcel_udfs()` on their sessions.
+
+## Features
+
+`parcel-runtime` loads tenants' WebAssembly functions with its default `wasm` feature. Built
+with `--no-default-features` it has no WebAssembly runtime: everything else works, and
+`Bundle::verify` refuses a bundle that carries a function, naming it, because the contract
+cannot be recompiled without loading it.
+
