@@ -394,10 +394,7 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
                     (
                         "admit",
                         Tier::ScanFilter,
-                        format!(
-                            "evaluated at the scan over {cols}{}",
-                            cost_note(&expr.expr, registry_names(&expr.expr))
-                        ),
+                        format!("evaluated at the scan over {cols}{}", cost_note(&expr.expr)),
                     )
                 }
             }
@@ -421,10 +418,7 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
                 (
                     "assert",
                     Tier::WriteTime,
-                    format!(
-                        "{what}{}",
-                        cost_note(&expr.expr, registry_names(&expr.expr))
-                    ),
+                    format!("{what}{}", cost_note(&expr.expr)),
                 )
             }
             CheckedRule::Transform {
@@ -1082,11 +1076,9 @@ fn dataset_fields(e: &TExpr) -> Vec<DatasetField> {
     out
 }
 
-fn registry_names(e: &TExpr) -> Vec<String> {
-    e.pins().into_iter().map(|p| p.name).collect()
-}
-
-fn cost_note(_e: &TExpr, fns: Vec<String>) -> String {
+/// The tenant functions an expression calls, as a suffix for its tier note.
+fn cost_note(e: &TExpr) -> String {
+    let fns: Vec<String> = e.pins().into_iter().map(|p| p.name).collect();
     if fns.is_empty() {
         String::new()
     } else {

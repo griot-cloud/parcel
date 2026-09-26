@@ -326,3 +326,31 @@ async fn bundles_round_trip_and_verify() {
     bad.exprs.insert("flag/s_prefix".into(), other);
     assert!(bad.verify().unwrap_err().contains("flag/s_prefix"));
 }
+
+/// Without the `wasm` feature a bundle that carries a function cannot be recompiled, and
+/// verification says why instead of failing on an unknown function.
+#[cfg(not(feature = "wasm"))]
+#[tokio::test]
+async fn bundles_with_functions_need_the_wasm_feature() {
+    use parcel_core::registry::{Cost, FunctionManifest};
+    use parcel_runtime::bundle::{Bundle, BundledFunction};
+    let doc = ContractDoc::parse(PROFILE).unwrap();
+    let c = compile(&doc, &schema(), &Registry::builtin()).unwrap();
+    let mut bundle = Bundle::new(&doc, &[], &schema(), &c).unwrap();
+    bundle.functions.push(BundledFunction {
+        owner: "acme".into(),
+        manifest: FunctionManifest {
+            name: "meter_serial".into(),
+            version: 1,
+            signatures: vec!["(string) -> bool".into()],
+            deterministic: true,
+            cost: Cost::Moderate,
+        },
+        module: String::new(),
+    });
+    let err = bundle.verify().unwrap_err();
+    assert!(
+        err.contains("meter_serial") && err.contains("`wasm` feature"),
+        "{err}"
+    );
+}
