@@ -72,13 +72,21 @@ pub async fn validate(
     validation_plan: LogicalPlan,
     data: Arc<dyn TableProvider>,
 ) -> Result<Verdict> {
+    validate_in(&session(), c, validation_plan, data).await
+}
+
+/// [`validate`] in the caller's session: an engine whose data lives in an object store
+/// registers the store there, and the validation scan reads through it. The session needs
+/// parcel's functions ([`session`] has them).
+pub async fn validate_in(
+    ctx: &SessionContext,
+    c: &Compilation,
+    validation_plan: LogicalPlan,
+    data: Arc<dyn TableProvider>,
+) -> Result<Verdict> {
     let cc = &c.contract;
     let plan = bind_binding(validation_plan, cc, data)?;
-    let batches = session()
-        .execute_logical_plan(plan)
-        .await?
-        .collect()
-        .await?;
+    let batches = ctx.execute_logical_plan(plan).await?.collect().await?;
     let batch = batches
         .iter()
         .find(|b| b.num_rows() > 0)

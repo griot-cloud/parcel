@@ -13,7 +13,6 @@ use datafusion_common::arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, StringArray, UInt64Array,
 };
 use datafusion_common::arrow::buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
-use datafusion_common::arrow::datatypes::DataType;
 use parcel_core::registry::{FunctionEntry, FunctionManifest, provide_implementation};
 use parcel_core::types::Type;
 use wasmtime::{
@@ -440,5 +439,3 @@ pub fn install(
         .insert(entry.hash.clone(), f);
     Ok(entry)
 }
-
-pub(crate) fn _unused(_: DataType) {}
