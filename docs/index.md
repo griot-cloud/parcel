@@ -1,104 +1,38 @@
+---
+layout: landing
+content_max_width: 68rem
+---
+
+<div class="parcel-home">
+
 # parcel
 
-<div class="parcel-hero">
-<p>Data contracts in <a href="https://cel.dev">CEL</a>, compiled into query plans. A contract
-says who may use a dataset, which rows and columns they see, how values are masked, and what the
-data must satisfy. parcel checks it against the data's schema and compiles it into expressions
-and plans any Arrow engine can run.</p>
+<p class="home-lead">parcel is a data contract language and compiler that lets you define data quality rules and data access policies, test them against sample data, and compile them for a query engine such as peQL to enforce.</p>
+
+<section class="home-usecases" aria-labelledby="usecases-title">
+  <h2 id="usecases-title" class="home-section-title">Use cases</h2>
+  <div class="home-usecase"><h3>Define how partners can use data</h3><p>Describe which orders each supplier can see, which columns they can query, and which values need masking.</p></div>
+  <div class="home-usecase"><h3>Check data before it reaches a report</h3><p>Require valid amounts, complete identifiers or fresh data. Choose whether a failed check excludes rows, blocks access or records a failure.</p></div>
+  <div class="home-usecase"><h3>Test policy changes before using them</h3><p>Check a contract against sample data and caller profiles. Catch invalid expressions and see how many rows each caller would be allowed to read.</p></div>
+  <div class="home-usecase"><h3>Use the same checks in another engine</h3><p>Export data validation as SQL or Substrait, or embed parcel's Rust libraries in a DataFusion application.</p></div>
+</section>
+
+<h2 class="home-section-title">Documentation</h2>
+<nav class="home-cards" aria-label="Documentation sections">
+  <a class="home-card" href="getting-started.html"><span class="card-number">01</span><h3>Getting started</h3><p>Learn the concepts, then check your first contract.</p><span class="card-arrow" aria-hidden="true">↗</span></a>
+  <a class="home-card" href="authoring.html"><span class="card-number">02</span><h3>Writing contracts</h3><p>Write and test rules, import existing contracts and add functions.</p><span class="card-arrow" aria-hidden="true">↗</span></a>
+  <a class="home-card" href="execution.html"><span class="card-number">03</span><h3>How it works</h3><p>Understand compilation and how engines use a contract.</p><span class="card-arrow" aria-hidden="true">↗</span></a>
+  <a class="home-card" href="reference.html"><span class="card-number">04</span><h3>Reference</h3><p>Look up contract fields, expressions, commands and Rust libraries.</p><span class="card-arrow" aria-hidden="true">↗</span></a>
+</nav>
+<a class="home-next" href="getting-started.html"><span><small>Start here</small>Getting started</span><span aria-hidden="true">→</span></a>
 </div>
 
-```yaml
-contract: sales/orders
-version: 1
-owner: acme
-binding: {parquet: data/orders/, partitioned_by: [region]}
-expose:
-  - {name: order_id, type: int64}
-  - {name: email, type: utf8}
-  - {name: region, type: utf8}
-  - {name: amount_cents, type: int64}
-rules:
-  - {id: analytics_only, op: decide, expr: "ctx.purpose in ['analytics', 'reporting']"}
-  - {id: own_or_admin, op: admit, expr: "row.tenant_id == ctx.tenant || 'admin' in ctx.roles"}
-  - {id: pk_present, op: assert, expr: "has(row.order_id)", on_fail: deny}
-  - {id: mask_email, op: transform, column: email, expr: "ctx.tenant == 'acme' ? row.email : hash_sha256(row.email)"}
-  - {id: ids_present, op: guarantee, expr: "dataset.customer_id.null_rate < 0.02", on_fail: deny}
-  - {id: small_cells, op: shape, operator: suppress, params: {k: 5}, unless: "ctx.tenant == 'acme'"}
-```
-
-::::{grid} 1 2 2 2
-:gutter: 3
-
-:::{grid-item-card} Quickstart
-:link: getting-started
-:link-type: doc
-
-Check a contract against sample data and compile it.
-:::
-
-:::{grid-item-card} The contract language
-:link: language
-:link-type: doc
-
-Operations, namespaces, types, functions, and nulls.
-:::
-
-:::{grid-item-card} How rules execute
-:link: concepts
-:link-type: doc
-
-What each rule costs, and the three artifacts parcel produces.
-:::
-
-:::{grid-item-card} parcel and peQL
-:link: parcel-and-peql
-:link-type: doc
-
-The language and the runtime, and the bundle between them.
-:::
-::::
-
 ```{toctree}
-:maxdepth: 1
-:caption: Learn
+:maxdepth: 2
 :hidden:
 
 getting-started
-```
-
-```{toctree}
-:maxdepth: 2
-:caption: How-to
-:hidden:
-
-functions
-exports
-odcs
-```
-
-```{toctree}
-:maxdepth: 2
-:caption: Reference
-:hidden:
-
-language
-cli
-crates
-```
-
-```{toctree}
-:maxdepth: 2
-:caption: Explanation
-:hidden:
-
-concepts
-parcel-and-peql
-```
-
-```{toctree}
-:maxdepth: 1
-:caption: Contribute
-:hidden:
-
-contributing
+authoring
+execution
+reference
 ```

@@ -1,36 +1,44 @@
-# Crates
+# Rust libraries
 
-| Crate | What it is |
+Use parcel's libraries to compile contracts or integrate their execution into a DataFusion application. The repository uses a shared version and DataFusion dependency across its crates.
+
+| Crate | Responsibility |
 | --- | --- |
-| `parcel-core` | The compiler: parse, check, classify, translate, assemble. No I/O. |
-| `parcel-runtime` | What an engine needs to run the artifacts: the `Caller` type, the reference CEL interpreter and built-ins, parameter binding, `decide` and `unless` evaluation, validation over any table, shape rewrites, WebAssembly loading, bundles, SQL and Substrait export, and the differential test. |
-| `parcel-udf` | Write functions in Rust for WebAssembly (no dependencies). |
-| `parcel-cli` | The `parcel` command. |
+| `parcel-core` | Parse, type-check and compile contracts; resolve inheritance; define built-ins. Performs no I/O. |
+| `parcel-runtime` | Caller values, parameter binding, validation, bundles, export, shape rewrites, reference evaluation and WebAssembly loading. |
+| `parcel-udf` | Export Rust functions as WebAssembly modules for parcel. |
+| `parcel-cli` | The `parcel` executable. |
 
-```rust
-use parcel_core::{compile, ContractDoc, Registry};
+## Compiler entry points
 
-let doc = ContractDoc::parse(&std::fs::read_to_string("orders.yaml")?)?;
-let compilation = compile(&doc, &schema, &Registry::builtin())?;
-for r in &compilation.contract.report {
-    println!("{} {} {}", r.rule, r.op, r.reason);
-}
-let verdict = parcel_runtime::plan::validate(&compilation, compilation.validation.plan.clone(), table).await?;
-```
+1. Parse YAML or JSON with `ContractDoc::parse`.
+2. Supply the source Arrow schema and `Registry::builtin()` plus any custom functions.
+3. Call `check_contract` for type checking, or `compile` to produce all three compiled outputs.
+4. Use `compile_with` and a parent lookup function when contracts inherit.
 
-`validate_in` does the same in the engine's own session, so a scan can read through object
-stores the engine registered there.
+`Compilation` contains `contract`, `validation` and `write`. Compilation failures return diagnostics with a code, an optional rule ID and an explanation. See {doc}`execution` for the outputs' roles.
 
-`parcel_runtime::plan` has the pieces an engine calls per query: `param_values` binds a caller,
-`refusal` runs `decide` rules, `active_shapes` evaluates `unless`, and `dataset_value` builds
-the `dataset` namespace from stored statistics. `parcel_runtime::shape::apply` applies
-`suppress` and aggregate `noise` to a caller's plan and returns the budget charges. Engines
-register `parcel_core::udfs::parcel_udfs()` on their sessions.
+## Runtime entry points
 
-## Features
+| API | Purpose |
+| --- | --- |
+| `Caller` | Supply caller identity, tenant, purpose and optional attributes. |
+| `plan::refusal` | Evaluate caller-level `decide` rules. |
+| `plan::param_values` | Bind caller values to compiled expression parameters. |
+| `plan::validate` | Run the validation plan over a table. |
+| `plan::validate_in` | The same, in the caller's session, so the scan reads through object stores registered there. |
+| `plan::dataset_value` | Build the dataset namespace from stored statistics. |
+| `plan::active_shapes` | Evaluate shape exemptions for a caller. |
+| `shape::apply` | Rewrite a query for suppression and aggregate noise; report budget charges. |
+| `bundle::Bundle` | Package, read and verify compiled contracts. |
+| `differential::differential` | Compare CEL and DataFusion rule results over sample rows and callers. |
 
-`parcel-runtime` loads tenants' WebAssembly functions with its default `wasm` feature. Built
-with `--no-default-features` it has no WebAssembly runtime: everything else works, and
-`Bundle::verify` refuses a bundle that carries a function, naming it, because the contract
-cannot be recompiled without loading it.
+A bundle's `from_json` method parses it; call `verify` before using its executable artifacts. Applications must also register the required functions with their DataFusion sessions.
 
+The runtime's `wasm` feature is enabled by default. Without it, `Bundle::verify` refuses a bundle that carries a function, naming it. `substrait` enables plan export and requires `protoc` at build time.
+
+## Integrating enforcement
+
+An application must connect the compiled outputs to its write and query paths, authenticate callers, keep validation statistics current and manage any privacy budgets. Calling the compiler alone does not establish those controls. [peQL](https://griot-cloud.github.io/peQL/rust.html) provides an engine with these paths already connected.
+
+For local API documentation, run `cargo doc --workspace --no-deps --open` from the repository root.

@@ -7,6 +7,11 @@ here=$(cd "$(dirname "$0")" && pwd)
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 
+echo "== suppliers (documentation quickstart)"
+cd "$here/suppliers"
+"$P" check orders.yaml --data orders.csv --caller acme.yaml --caller globex.yaml | tail -6
+"$P" compile orders.yaml --schema orders.csv -o "$out/supplier_orders.json" >/dev/null
+
 echo "== quickstart"
 cd "$here/quickstart"
 "$P" check contracts/orders.yaml --data incoming/orders.csv --type msisdn=utf8 \

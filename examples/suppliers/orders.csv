@@ -1,0 +1,5 @@
+order_id,supplier_id,amount
+1,globex,120
+2,initech,80
+3,globex,-5
+4,globex,60

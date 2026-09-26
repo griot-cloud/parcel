@@ -1,0 +1,17 @@
+contract: purchasing/orders
+version: 1
+owner: acme
+binding:
+  parquet: data/orders/
+expose:
+  - {name: order_id, type: int64}
+  - {name: amount, type: int64}
+rules:
+  - id: supplier_orders
+    op: admit
+    expr: ctx.tenant == 'acme' || row.supplier_id == ctx.tenant
+
+  - id: positive_amount
+    op: assert
+    expr: row.amount > 0
+    on_fail: drop

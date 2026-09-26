@@ -1,56 +1,61 @@
-# How rules execute
+# Concepts
 
-## Three namespaces
+parcel lets you define a **data contract**: the data quality rules and access policies for a dataset. A contract also identifies the data and lists the columns available to callers.
 
-A rule reads from up to three namespaces, and which ones decide how it runs.
+## What is a data contract?
 
-```{list-table}
-:header-rows: 1
-:class: namespaces
+Acme wants to share orders with its suppliers. Acme staff should see all orders, while each supplier should see only its own. Orders with zero or negative amounts should be excluded from everyone's results.
 
-* - Namespace
-  - Holds
-  - A rule that reads only this costs
-* - `ctx`
-  - the caller: id, tenant, purpose, tier, clearance, classification, roles, now, `other`
-  - nothing: evaluated once per query, before any file is opened
-* - `dataset`
-  - statistics stored when the data was written
-  - one manifest read
-* - `row`
-  - one record
-  - a filter pushed into the scan, or a flag computed when the data is written
+```{literalinclude} ../examples/suppliers/orders.yaml
+:language: yaml
 ```
 
-A rule that mixes `row` and `ctx` (`row.tenant_id == ctx.tenant`) has its `ctx` parts turned
-into parameters, bound per query and folded away by the optimiser. A caller for whom a rule
-cannot matter pays nothing for it.
+The source data has `order_id`, `supplier_id` and `amount` columns. This contract exposes only `order_id` and `amount`. The `supplier_id` column is available to the rules but hidden from queries.
 
-## Seven operations
+The `supplier_orders` rule allows Acme to see all orders and suppliers to see their assigned orders. The `positive_amount` rule excludes non-positive amounts from both groups. Owning a contract does not automatically bypass its rules: Acme's access comes from the explicit condition in `supplier_orders`.
 
-| Operation | Reads | Becomes |
+## Contract fields
+
+A contract is a YAML or JSON document. Its main fields are:
+
+| Field | Meaning in the example |
+| --- | --- |
+| `contract` and `version` | The name `purchasing/orders` and version `1`. |
+| `owner` | The organisation that owns the contract, `acme`. |
+| `binding` | Where an engine can find the data. |
+| `expose` | The columns and types a caller may query. |
+| `rules` | The checks and policies the engine must apply. |
+
+The schema of the **source data** and the schema in **expose** can differ. Rules may read source columns that callers cannot select, as `supplier_id` demonstrates.
+
+## Rules and expressions
+
+A **rule** has a name (`id`), an operation (`op`) and the expression or settings for that operation. `admit` determines which rows a caller may read; `assert` checks whether each row meets a quality requirement.
+
+Expressions use a supported subset of **CEL**, the Common Expression Language: a lightweight language for conditions and calculations. For example, `row.amount > 0` returns true or false. `||` means “or”, so the supplier policy reads “the caller is Acme, or this order belongs to the caller's tenant”.
+
+parcel checks expressions against column names and types before compiling them. An unknown column, unsupported expression or invalid use of caller information produces an error.
+
+## Namespaces
+
+A **namespace** groups the values an expression can read. parcel has three:
+
+| Namespace | Contains | Example |
 | --- | --- | --- |
-| `decide` | `ctx` | A yes or no per caller, before any data is read. |
-| `expose` | (the schema) | The columns the contract offers; nothing else exists for a caller. |
-| `admit` | `row`, `ctx` | A filter in the view. |
-| `assert` | `row` | A flag computed at write; failing rows are dropped (`drop`), counted (`report`), or make the data unservable (`deny`). |
-| `transform` | `row`, `ctx` | The column's projection in the view. |
-| `guarantee` | `dataset`, `ctx.now` | A check against the manifest per query: refuse (`deny`) or note (`annotate`). |
-| `shape` | `ctx` (in `unless`) | `sample` and row `noise` in the view; `suppress` and aggregate `noise` on the query. |
+| `row` | Values from one record. | `row.amount > 0` |
+| `ctx` | The caller's identity and attributes. | `ctx.tenant == 'acme'` |
+| `dataset` | Statistics about the whole dataset. | `dataset.row_count > 0` |
 
-parcel refuses a rule whose namespaces do not fit its operation: an `assert` that reads `ctx`
-fails with "assertions describe data, not callers; use admit".
+A **caller** is a user, agent or service. Its **tenant** identifies an organisation or group, such as Acme or Globex. The application authenticates the caller and supplies these attributes; parcel evaluates them.
 
-## Three artifacts
+Different operations permit different namespaces. An access policy can depend on the caller, but a data quality assertion must describe the data itself. The {doc}`language` reference lists these restrictions and the other operations.
 
-Compiling produces three artifacts that share one hash:
+## Checking, compiling and enforcing
 
-- **CompiledContract**: what an engine splices into a caller's query. Admits, flags, the
-  projection, parameters, shapes, and variants that read precomputed columns.
-- **ValidationPlan**: one aggregate query over the data that returns a single verdict row.
-  Every engine that runs it over the same data gets the same verdict, which is what a
-  certificate signs.
-- **WritePlan**: what must be on disk for every rule to be cheap: flag columns, precomputed
-  subtrees, clustering, partitioning, bloom filters, and the `row.other` enrichers.
+**Checking** runs a contract against sample data. It reports quality failures, tests caller access and compares rule results from a CEL interpreter with those from DataFusion, the SQL engine parcel compiles for.
 
-`parcel compile` prints the report of how each rule executes; `--json` prints the artifacts.
+**Compiling** produces expressions and plans an engine can execute. A **bundle** packages these results, the contract, its schema and any custom functions in one file.
+
+**Enforcement** happens in the application or query engine using those results. [peQL](https://griot-cloud.github.io/peQL/) uses parcel to validate data and apply contracts to SQL queries. Running `parcel check` alone does not change or protect the source files.
+
+Continue to the {doc}`quickstart` to try the supplier example.
