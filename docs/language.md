@@ -25,7 +25,7 @@ Contracts are YAML or JSON documents. Run `parcel schema` for the JSON Schema, o
 
 ## Rule operations
 
-Each rule requires a unique `id` made of lowercase letters, digits and underscores, and an `op`.
+Each rule requires a unique `id` matching `[a-z][a-z0-9_]*` (a lowercase letter followed by lowercase letters, digits or underscores), and an `op`.
 
 | `op` | Allowed inputs | Required fields | Meaning |
 | --- | --- | --- | --- |
