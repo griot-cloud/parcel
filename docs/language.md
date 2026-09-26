@@ -1,85 +1,129 @@
-# The contract language
+# Contract language
 
-A contract is a YAML (or JSON) document. `parcel schema` prints its JSON Schema, also published
-at `schema/contract.schema.json`; start a file with
-`# yaml-language-server: $schema=https://raw.githubusercontent.com/griot-cloud/parcel/main/schema/contract.schema.json`
-for completion in editors.
-
-## The document
-
-| Field | Required | Holds |
-| --- | --- | --- |
-| `contract` | yes | The name callers query, e.g. `sales/orders`. |
-| `version` | yes | An integer; engines keep every version. |
-| `owner` | no | The tenant the contract belongs to. Its functions are the ones rules may call. |
-| `inherits` | no | A parent contract: the child can only restrict it. |
-| `binding` | yes, unless inherited | `parquet: <path or directory>`, and `partitioned_by: [columns]`. |
-| `expose` | yes, unless inherited | `[{name, type}]`: the columns callers see, and their types. |
-| `rules` | no | The rules, below. |
-| `extensions` | no | Typed extra fields: `row`, `ctx`, `dataset` maps of field to type. |
-| `enrich` | no | `[{field, expr}]`: how each `row.other` field is computed at write. |
-| `dataset_other` | no | `[{field, value}]` or `[{field, expr}]`: `dataset.other` fields. |
-
-## Rules
-
-Every rule has an `id` (lower case, digits and underscores) and an `op`.
+Contracts are YAML or JSON documents. Run `parcel schema` for the JSON Schema, or add this line to YAML files for editors that support it:
 
 ```yaml
-- {id: analytics_only, op: decide, expr: "ctx.purpose in ['analytics', 'reporting']"}
-- {id: own_rows, op: admit, expr: "row.tenant_id == ctx.tenant || 'admin' in ctx.roles"}
-- {id: pk_present, op: assert, expr: "has(row.order_id)", on_fail: deny}      # deny | drop | report
-- {id: mask_email, op: transform, column: email, expr: "ctx.tenant == 'acme' ? row.email : hash_sha256(row.email)"}
-- {id: fresh, op: guarantee, expr: "dataset.written_at > ctx.now - duration('72h')", on_fail: annotate}  # deny | annotate
-- {id: small_cells, op: shape, operator: suppress, params: {k: 5}, unless: "ctx.tenant == 'acme'"}
-- {id: sampled, op: shape, operator: sample, params: {fraction: 0.1, key: order_id}}
-- {id: noisy, op: shape, operator: noise, column: salary, params: {sensitivity: 1000, epsilon: 1, budget: salary, at: row}}
+# yaml-language-server: $schema=https://raw.githubusercontent.com/griot-cloud/parcel/main/schema/contract.schema.json
 ```
 
-`noise` takes `at: aggregate` (the default: noise on aggregates over the column, which cannot
-be read otherwise) or `at: row` (noise on each value), and a numeric column.
+## Document fields
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `contract` | Yes | Contract name, such as `purchasing/orders`. |
+| `version` | Yes | Unsigned integer version. |
+| `owner` | No | Tenant whose registered functions the rules may use. |
+| `inherits` | No | Parent contract name. See {doc}`authoring`. |
+| `binding` | Unless inherited | `{parquet: path, partitioned_by: [columns]}`. |
+| `expose` | Unless inherited | List of `{name, type}` columns available to queries. |
+| `rules` | No | List of the operations below. |
+| `extensions` | No | Typed custom fields under `row`, `ctx` and `dataset`. |
+| `enrich` | No | List of `{field, expr}` producers for `row.other` fields. |
+| `dataset_other` | No | List of `{field, value}` or `{field, expr}` producers for `dataset.other`. |
+
+`expose` is a document field, not an `op` in the rules list. A transformed column may have a different type from its source when `expose` declares the output type.
+
+## Rule operations
+
+Each rule requires a unique `id` made of lowercase letters, digits and underscores, and an `op`.
+
+| `op` | Allowed inputs | Required fields | Meaning |
+| --- | --- | --- | --- |
+| `decide` | `ctx` | `expr` | Refuse the caller when false. |
+| `admit` | `row`, `ctx` | `expr` | Include rows for which the condition is true. |
+| `assert` | `row` | `expr`, `on_fail` | Check row quality; fail with `drop`, `deny` or `report`. |
+| `transform` | `row`, `ctx` | `column`, `expr` | Replace an exposed column's value. |
+| `guarantee` | `dataset`, `ctx.now` | `expr`, `on_fail` | Check a dataset requirement; fail with `deny` or `annotate`. |
+| `shape` | `ctx` in `unless` | `operator`, `params` | Sample rows, suppress small groups or add noise. |
+
+Boolean operations require a true-or-false expression. A transform's result must match the exposed column's type.
+
+These independent examples assume the referenced fields exist in the schema:
+
+```yaml
+rules:
+  - {id: purchasing_only, op: decide, expr: "ctx.purpose == 'purchasing'"}
+  - {id: own_orders, op: admit, expr: "row.supplier_id == ctx.tenant"}
+  - {id: positive_amount, op: assert, expr: "row.amount > 0", on_fail: drop}
+  - {id: mask_email, op: transform, column: email, expr: "redact(row.email)"}
+  - {id: nonempty, op: guarantee, expr: "dataset.row_count > 0", on_fail: deny}
+```
+
+### Shapes
+
+| Operator | Parameters | Applies to |
+| --- | --- | --- |
+| `suppress` | Integer `k >= 1`. | Groups with fewer than `k` contributing rows. |
+| `sample` | `fraction` greater than 0 and at most 1; exposed `key` column. | A stable sample chosen from the key. |
+| `noise` | Positive `sensitivity` and `epsilon`; a named `budget`; optional `at`. | Numeric exposed `column`; `at: aggregate` by default, or `at: row`. |
+
+```yaml
+- id: small_groups
+  op: shape
+  operator: suppress
+  params: {k: 5}
+  unless: "ctx.tenant == 'acme'"
+```
+
+`unless` skips the shape when its caller-only condition is true. Aggregate noise restricts how the protected column can be queried. The serving engine must apply the shape and account for budget charges; exporting a validation plan does not export these query policies.
 
 ## Namespaces
 
-| Namespace | Fields |
+| Namespace | Available fields |
 | --- | --- |
-| `ctx` | `id`, `tenant`, `purpose`, `tier`, `classification` (strings), `clearance` (int), `roles` (list of strings), `now` (timestamp, fixed per query), `other.<field>` (declared in `extensions.ctx`) |
-| `row` | one field per column of the bound data, and `other.<field>` (declared in `extensions.row`, produced by `enrich`) |
-| `dataset` | `row_count`, `written_at`, `contract_hash`; per column `<col>.null_count`, `null_rate`, `distinct_count`, `min`, `max`; per assertion `assertions.<id>.pass_rate`; `other.<field>` |
+| `ctx` | Strings `id`, `tenant`, `purpose`, `tier`, `classification`; integer `clearance`; list `roles`; timestamp `now`; declared `other.<field>`. |
+| `row` | Source columns and declared `other.<field>` values. |
+| `dataset` | `row_count`, `written_at`, `contract_hash`; column statistics; `assertions.<id>.pass_rate`; declared `other.<field>`. |
+
+Column statistics are `<column>.null_count`, `null_rate`, `distinct_count`, `min` and `max`. `ctx.now` is fixed for a query. Declare custom field types in `extensions`; use `enrich` for derived row fields and `dataset_other` for constants or dataset aggregates. The application supplies `ctx.other` values.
+
+```yaml
+extensions:
+  row: {amount_major: double}
+enrich:
+  - {field: amount_major, expr: "double(row.amount) / 100.0"}
+```
+
+Rules can then read `row.other.amount_major`.
 
 ## Expressions
 
-parcel accepts a strict subset of CEL, and rejects anything it cannot translate faithfully,
-with a reason.
+parcel supports a checked subset of CEL. Unsupported syntax, types and operations are rejected during compilation.
 
-- **Types:** bool, int, uint, double, string, bytes, timestamp, duration, lists, and exact
-  decimals (up to 18 digits; no division; one scale per comparison).
-- **Operators:** comparison, arithmetic, logical and ternary operators, and `in`.
-- **Strings:** `startsWith`, `endsWith`, `contains`, `matches` (a literal pattern), `size`.
-- **Conversions:** `int`, `uint`, `double`, `string`, `timestamp`, `duration`.
-- **Timestamps:** `getFullYear`, `getMonth`, `getDayOfMonth`, `getDayOfWeek`, `getDayOfYear`,
-  `getHours`, `getMinutes`, `getSeconds`.
-- **Presence:** `has(row.col)`.
-- **Macros over lists:** `exists`, `all`, `filter`, `map`.
-- **Built-in functions:** `hash_sha256`, `redact` (a fixed `***`: the length is not revealed),
-  `partial(value, n)` (`***` and the last `n` characters; fully masked when the value has `n`
-  characters or fewer), `is_msisdn` (Kenyan mobile numbers, 254 then 7 or 1), `is_email`.
-- **Tenant functions:** any the contract's owner registered; see {doc}`functions`.
+| Category | Supported forms |
+| --- | --- |
+| Values | Boolean, integer, unsigned integer, double, string, bytes, timestamp, duration, lists and exact decimals. |
+| Operators | Comparisons, arithmetic, `&&`, `||`, `!`, conditional `? :`, and membership `in`. |
+| Strings | `startsWith`, `endsWith`, `contains`, `matches` with a literal pattern, `size`. |
+| Conversions | `int`, `uint`, `double`, `string`, `timestamp`, `duration`. |
+| Timestamps | `getFullYear`, `getMonth`, `getDayOfMonth`, `getDayOfWeek`, `getDayOfYear`, `getHours`, `getMinutes`, `getSeconds`. |
+| Presence | `has(row.column)`. |
+| Lists | `exists`, `all`, `filter`, `map`. |
+
+Exact decimals support up to 18 digits, no division, and one scale per comparison.
+
+### Built-in functions
+
+| Function | Result |
+| --- | --- |
+| `hash_sha256(value)` | SHA-256 hash of a string. |
+| `redact(value)` | Fixed `***` string. |
+| `partial(value, n)` | `***` followed by the final `n` characters; fully masked when the value is no longer than `n`. |
+| `is_msisdn(value)` | Checks the supported Kenyan mobile-number format. |
+| `is_email(value)` | Checks email format. |
+
+Contracts may also call their owner's registered {doc}`functions`.
 
 ## Nulls
 
-A null in a row field a rule reads makes an `admit` or `assert` false and a `transform` null;
-`has()` is how a rule tests presence. `null` may be written as one branch of `?:`
-(`ctx.clearance > 2 ? row.salary : null`) and takes the other branch's type.
+A null in a row field read by value makes an `admit` or `assert` false and a `transform` null. Use `has(row.column)` to test presence. A literal `null` is supported as a branch of a conditional, taking the other branch's type:
 
-## Types in `expose`
+```text
+ctx.clearance > 2 ? row.salary : null
+```
 
-`bool`, `int8` to `int64`, `uint8` to `uint64`, `float32`, `float64` (or `double`), `utf8` (or
-`string`), `large_utf8`, `binary` (or `bytes`), `timestamp` (microseconds, UTC) or
-`timestamp[s|ms|us|ns]`, `duration` or `duration[unit]`, `decimal(p,s)`, and `list<type>`. A transformed column may change type when `expose` declares the new one:
-`{name: amount, type: utf8}` with `hash_sha256(string(row.amount))`.
+## Column types
 
-## Inheritance
+`expose` and extension declarations accept `bool`, `int8` through `int64`, `uint8` through `uint64`, `float32`, `float64` (or `double`), `utf8` (or `string`), `large_utf8`, `binary` (or `bytes`), `timestamp`, `duration`, `decimal(p,s)` and `list<type>`.
 
-A child names its parent with `inherits`. It may narrow `expose`, add rules, and compose
-transforms (the parent's applies first); it can never remove a parent's rule or reveal a column
-the parent hid. The flattened result is what gets compiled.
+`timestamp` defaults to microseconds in UTC; explicit units use `timestamp[s]`, `[ms]`, `[us]` or `[ns]`. Duration units use the same bracket notation.

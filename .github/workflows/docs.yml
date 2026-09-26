@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "docs/**"
+      - "examples/suppliers/**"
       - ".github/workflows/docs.yml"
   push:
     branches: [main]
