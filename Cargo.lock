@@ -2817,7 +2817,7 @@ checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 
 [[package]]
 name = "parcel-cli"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "chrono",
  "clap",
@@ -2833,7 +2833,7 @@ dependencies = [
 
 [[package]]
 name = "parcel-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "cel",
  "chrono",
@@ -2856,7 +2856,7 @@ dependencies = [
 
 [[package]]
 name = "parcel-runtime"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "cel",
  "chrono",
@@ -2882,7 +2882,7 @@ dependencies = [
 
 [[package]]
 name = "parcel-udf"
-version = "0.0.1"
+version = "0.0.2"
 
 [[package]]
 name = "parking_lot"

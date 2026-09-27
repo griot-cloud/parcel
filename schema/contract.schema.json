@@ -36,6 +36,16 @@
         }
       ]
     },
+    "residency": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Residency"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "expose": {
       "description": "The caller's schema. A child contract may omit it (inherit the parent's) or narrow it.",
       "type": [
@@ -108,6 +118,28 @@
       "additionalProperties": false,
       "required": [
         "parquet"
+      ]
+    },
+    "Residency": {
+      "description": "Placement terms, independent of the six rule operations. Missing terms deny placement.",
+      "type": "object",
+      "properties": {
+        "jurisdictions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "approved_output_may_leave": {
+          "description": "Permission to release approved output outside the processing jurisdictions.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "jurisdictions"
       ]
     },
     "ExposeColumn": {
