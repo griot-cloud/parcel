@@ -175,6 +175,7 @@ pub fn import(source: &str, object: Option<&str>) -> Result<Imported, String> {
         version,
         owner: v.get("tenant").and_then(Value::as_str).map(slug),
         inherits: None,
+        residency: None,
         binding: Some(Binding {
             parquet: format!("data/{}/", slug(obj_name)),
             partitioned_by: Vec::new(),

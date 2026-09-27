@@ -46,6 +46,11 @@ fn resolve_inner(
         return Err(err(format!("inheritance cycle: {}", chain.join(" -> "))));
     }
     chain.push(doc.contract.clone());
+    if let Some(terms) = &doc.residency {
+        terms
+            .validate()
+            .map_err(|m| vec![Diagnostic::new(Code::Residency, None, m)])?;
+    }
     let Some(parent_name) = &doc.inherits else {
         return Ok(Resolved {
             doc: doc.clone(),
@@ -70,6 +75,23 @@ fn resolve_inner(
                 doc.contract
             )));
         }
+    };
+
+    let residency = match (&doc.residency, &p.residency) {
+        (None, terms) => terms.clone(),
+        (Some(child), Some(parent)) if !child.narrows(parent) => {
+            return Err(err(format!(
+                "`{}` widens residency terms from `{parent_name}`",
+                doc.contract
+            )));
+        }
+        (Some(_), None) => {
+            return Err(err(format!(
+                "`{}` cannot grant residency absent from `{parent_name}`",
+                doc.contract
+            )));
+        }
+        (Some(child), Some(_)) => Some(child.clone()),
     };
 
     let parent_expose = p.expose.clone().unwrap_or_default();
@@ -143,6 +165,7 @@ fn resolve_inner(
         owner: doc.owner.clone().or_else(|| p.owner.clone()),
         inherits: None,
         binding,
+        residency,
         expose: Some(expose),
         rules,
         extensions: doc.extensions.clone().or_else(|| p.extensions.clone()),

@@ -140,6 +140,13 @@ impl Bundle {
         serde_json::from_str(s)
     }
 
+    /// Verified, inherited placement terms. Invalid bundles and absent terms deny permission.
+    pub fn residency(&self) -> parcel_core::Residency {
+        self.verify()
+            .map(|c| c.contract.residency)
+            .unwrap_or_default()
+    }
+
     pub fn schema(&self) -> Result<Schema, String> {
         schema_from_defs(&self.row_schema)
     }
@@ -176,6 +183,9 @@ impl Bundle {
                 .collect::<Vec<_>>()
                 .join("; ")
         })?;
+        if c.contract.contract_hash != self.contract_hash {
+            return Err("contract hash mismatch".into());
+        }
         if c.contract.compilation_hash != self.compilation_hash {
             return Err(format!(
                 "compilation hash mismatch: bundle says {}, recompiling gives {}",
