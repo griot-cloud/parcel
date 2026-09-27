@@ -64,6 +64,18 @@ pub fn json_value(j: &serde_json::Value, ty: &Type) -> Option<Value> {
                 .map(|x| json_value(x, elem))
                 .collect::<Option<Vec<_>>>()?,
         )),
+        Type::Embedding(n) => {
+            let values = j.as_array()?;
+            if values.len() != *n as usize {
+                return None;
+            }
+            Value::List(Arc::new(
+                values
+                    .iter()
+                    .map(|v| Some(Value::Float((v.as_f64()? as f32) as f64)))
+                    .collect::<Option<Vec<_>>>()?,
+            ))
+        }
         Type::Decimal(s) => Value::Int((j.as_f64()? * 10f64.powi(*s as i32)).round() as i64),
         Type::Bytes | Type::Duration => return None,
     })
@@ -248,6 +260,29 @@ pub fn to_scalar(v: &Value, ty: &Type) -> Result<ScalarValue, String> {
         (Type::Duration, Value::Duration(d)) => {
             ScalarValue::DurationMicrosecond(d.num_microseconds())
         }
+        (Type::Embedding(n), Value::List(items)) => {
+            if *n <= 0 || items.len() != *n as usize {
+                return Err(format!(
+                    "expected embedding dimension {n}, got {}",
+                    items.len()
+                ));
+            }
+            let values = items
+                .iter()
+                .map(|v| match v {
+                    Value::Float(f) => Ok(*f as f32),
+                    _ => Err("embedding elements must be floats".to_string()),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let array = datafusion_common::arrow::array::FixedSizeListArray::try_new(
+                Arc::new(Field::new_list_field(DataType::Float32, true)),
+                *n,
+                Arc::new(datafusion_common::arrow::array::Float32Array::from(values)),
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+            ScalarValue::FixedSizeList(Arc::new(array))
+        }
         (Type::List(elem), Value::List(items)) => {
             let scalars = items
                 .iter()
@@ -288,6 +323,19 @@ pub fn from_scalar(s: &ScalarValue) -> Option<Value> {
         S::DurationMicrosecond(Some(v)) => Value::Duration(Duration::microseconds(*v)),
         S::DurationNanosecond(Some(v)) => Value::Duration(Duration::nanoseconds(*v)),
         S::List(arr) => {
+            if arr.is_null(0) {
+                return None;
+            }
+            let values = arr.value(0);
+            let mut out = Vec::with_capacity(values.len());
+            for i in 0..values.len() {
+                let item = ScalarValue::try_from_array(&values, i).ok()?;
+                // CEL lists cannot hold SQL-style nulls; parcel treats a list with a null element as null.
+                out.push(from_scalar(&item)?);
+            }
+            Value::List(Arc::new(out))
+        }
+        S::FixedSizeList(arr) => {
             if arr.is_null(0) {
                 return None;
             }
