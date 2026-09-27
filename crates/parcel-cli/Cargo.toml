@@ -12,8 +12,8 @@ name = "parcel"
 path = "src/main.rs"
 
 [dependencies]
-parcel-core = { path = "../parcel-core", version = "0.0.1" }
-parcel-runtime = { path = "../parcel-runtime", version = "0.0.1" }
+parcel-core = { path = "../parcel-core", version = "0.0.2" }
+parcel-runtime = { path = "../parcel-runtime", version = "0.0.2" }
 datafusion = "55.1.0"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 clap = { version = "4", features = ["derive"] }

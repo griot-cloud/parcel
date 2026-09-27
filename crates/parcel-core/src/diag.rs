@@ -11,6 +11,8 @@ use serde::Serialize;
 pub enum Code {
     /// The document is not valid YAML/JSON or does not match the contract shape.
     Document,
+    /// Invalid placement terms.
+    Residency,
     /// A feature the design defines but parcel v0 does not implement yet.
     Unsupported,
     InvalidRuleId,

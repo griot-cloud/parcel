@@ -23,6 +23,8 @@ pub struct ContractDoc {
     /// Where the data is. A child contract may omit it and inherit its parent's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<Binding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub residency: Option<crate::Residency>,
     /// The caller's schema. A child contract may omit it (inherit the parent's) or narrow it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose: Option<Vec<ExposeColumn>>,

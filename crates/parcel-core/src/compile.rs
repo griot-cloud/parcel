@@ -144,6 +144,7 @@ pub struct CompiledContract {
     /// whose functions the contract may call.
     pub owner: Option<String>,
     pub binding: Binding,
+    pub residency: crate::Residency,
     #[serde(serialize_with = "ser_schema")]
     pub row_schema: SchemaRef,
     #[serde(serialize_with = "ser_schema")]
@@ -641,6 +642,7 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
             compilation_hash,
             owner: c.owner.clone(),
             binding: c.binding.clone(),
+            residency: c.residency.clone(),
             row_schema: Arc::new(schema.clone()),
             exposed_schema,
             params: params.list,

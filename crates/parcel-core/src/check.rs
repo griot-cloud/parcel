@@ -132,6 +132,7 @@ pub struct CheckedContract {
     /// The tenant the contract belongs to, after inheritance.
     pub owner: Option<String>,
     pub binding: Binding,
+    pub residency: crate::Residency,
     pub exposed: Vec<ExposedColumn>,
     pub rules: Vec<CheckedRule>,
     /// Every registry entry the contract is pinned to.
@@ -211,6 +212,11 @@ pub fn check_layers(
     layers: &[Layer],
 ) -> Result<CheckedContract, Vec<Diagnostic>> {
     let mut d: Vec<Diagnostic> = Vec::new();
+    if let Some(terms) = &doc.residency {
+        if let Err(message) = terms.validate() {
+            d.push(Diagnostic::new(Code::Residency, None, message));
+        }
+    }
     let layer_of = |id: &str| {
         layers
             .iter()
@@ -504,6 +510,7 @@ pub fn check_layers(
         contract_hash: contract_hash(doc),
         owner: doc.owner.clone(),
         binding: binding.clone(),
+        residency: doc.residency.clone().unwrap_or_default(),
         exposed,
         rules,
         functions,
