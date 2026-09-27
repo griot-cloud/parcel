@@ -107,6 +107,9 @@ pub fn parse_signature(s: &str) -> Result<Signature, String> {
             "double" => Type::Double,
             "string" => Type::String,
             "bytes" => Type::Bytes,
+            other if other.starts_with("fixed_size_list<") => {
+                Type::from_arrow(&crate::types::parse_type_name(other)?)?
+            }
             other => {
                 return Err(format!(
                     "`{other}` is not a user function type; use bool, int, uint, double, string or bytes"
@@ -117,7 +120,30 @@ pub fn parse_signature(s: &str) -> Result<Signature, String> {
     let args = if args.trim().is_empty() {
         Vec::new()
     } else {
-        args.split(',').map(scalar).collect::<Result<_, _>>()?
+        let mut depth = 0i32;
+        let mut start = 0;
+        let mut types = Vec::new();
+        for (i, ch) in args.char_indices() {
+            match ch {
+                '<' => depth += 1,
+                '>' => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return Err(bad());
+                    }
+                }
+                ',' if depth == 0 => {
+                    types.push(scalar(&args[start..i])?);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 {
+            return Err(bad());
+        }
+        types.push(scalar(&args[start..])?);
+        types
     };
     Ok(Signature {
         args,

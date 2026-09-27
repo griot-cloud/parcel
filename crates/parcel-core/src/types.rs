@@ -21,6 +21,8 @@ pub enum Type {
     Timestamp,
     Duration,
     List(Box<Type>),
+    /// A dimension-preserving embedding; its Arrow elements are float32.
+    Embedding(i32),
     /// An exact decimal with this many digits after the point, at most 18 digits in all.
     /// The reference interpreter sees its unscaled integer (100.50 at scale 2 is 10050).
     Decimal(i8),
@@ -65,6 +67,9 @@ impl Type {
             Type::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             Type::Duration => DataType::Duration(TimeUnit::Microsecond),
             Type::List(elem) => DataType::List(Field::new_list_field(elem.to_arrow(), true).into()),
+            Type::Embedding(n) => {
+                DataType::FixedSizeList(Field::new_list_field(DataType::Float32, true).into(), *n)
+            }
             Type::Decimal(s) => DataType::Decimal128(DECIMAL_PRECISION, *s),
         }
     }
@@ -87,6 +92,12 @@ impl Type {
             | DataType::LargeList(f)
             | DataType::ListView(f)
             | DataType::LargeListView(f) => Type::list(Type::from_arrow(f.data_type())?),
+            DataType::FixedSizeList(f, n) => {
+                if *n <= 0 || f.data_type() != &DataType::Float32 {
+                    return Err("embeddings require fixed_size_list<float32, N> with N > 0".into());
+                }
+                Type::Embedding(*n)
+            }
             DataType::Decimal32(p, s)
             | DataType::Decimal64(p, s)
             | DataType::Decimal128(p, s)
@@ -128,6 +139,7 @@ impl fmt::Display for Type {
             Type::Timestamp => f.write_str("timestamp"),
             Type::Duration => f.write_str("duration"),
             Type::List(e) => write!(f, "list<{e}>"),
+            Type::Embedding(n) => write!(f, "fixed_size_list<float32, {n}>"),
             Type::Decimal(sc) => write!(f, "decimal({DECIMAL_PRECISION},{sc})"),
         }
     }
@@ -150,6 +162,25 @@ pub fn parse_type_name(s: &str) -> Result<DataType, String> {
             _ => Err(format!("unknown time unit '{u}' in type '{s}'")),
         }
     };
+    if let Some(inner) = t
+        .strip_prefix("fixed_size_list<")
+        .and_then(|r| r.strip_suffix('>'))
+    {
+        let (elem, dimension) = inner
+            .split_once(',')
+            .ok_or_else(|| format!("expected fixed_size_list<float32, N>, got '{s}'"))?;
+        if elem.trim() != "float32" {
+            return Err(format!("embedding elements must be float32 in '{s}'"));
+        }
+        let n: i32 = dimension
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid embedding dimension in '{s}'"))?;
+        if n <= 0 {
+            return Err(format!("embedding dimension must be positive in '{s}'"));
+        }
+        return Ok(Type::Embedding(n).to_arrow());
+    }
     if let Some(inner) = t.strip_prefix("list<").and_then(|r| r.strip_suffix('>')) {
         let elem = parse_type_name(inner)?;
         return Ok(DataType::List(Field::new_list_field(elem, true).into()));

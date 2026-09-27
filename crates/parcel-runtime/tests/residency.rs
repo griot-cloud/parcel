@@ -28,7 +28,7 @@ fn bundle_round_trip_verifies_and_exposes_inherited_terms() {
         let b = bundle(inherit);
         let b = Bundle::from_json(&b.to_json().unwrap()).unwrap();
         assert_eq!(b.format, FORMAT);
-        assert_eq!(b.parcel_version, "0.0.2");
+        assert_eq!(b.parcel_version, env!("CARGO_PKG_VERSION"));
         let c = b.verify().unwrap();
         assert_eq!(b.contract_hash, c.contract.contract_hash);
         assert!(b.residency().permits("KE"));
