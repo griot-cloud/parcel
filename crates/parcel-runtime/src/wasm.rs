@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use cel::Value;
 use datafusion_common::arrow::array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, StringArray, UInt64Array,
+    Array, ArrayRef, BinaryArray, BooleanArray, FixedSizeListArray, Float32Array, Float64Array,
+    Int64Array, StringArray, UInt64Array,
 };
 use datafusion_common::arrow::buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use parcel_core::registry::{FunctionEntry, FunctionManifest, provide_implementation};
@@ -124,6 +125,16 @@ impl WasmFunction {
     /// the right length, and a null where an argument was null.
     fn smoke(&self) -> Result<(), String> {
         let rows = 4;
+        for ty in self.arg_types.iter().chain(std::iter::once(&self.ret)) {
+            if let Type::Embedding(n) = ty {
+                let bytes = (*n as usize)
+                    .checked_mul(rows)
+                    .and_then(|n| n.checked_mul(4));
+                if *n <= 0 || bytes.is_none_or(|n| n > MEMORY_LIMIT) {
+                    return Err("embedding smoke batch exceeds the function memory limit".into());
+                }
+            }
+        }
         let args: Vec<ArrayRef> = self.arg_types.iter().map(|t| sample(t, rows)).collect();
         let out = self
             .call(&args, rows)
@@ -218,6 +229,7 @@ fn tag(t: &Type) -> Result<u8, String> {
         Type::Double => DOUBLE,
         Type::String => STRING,
         Type::Bytes => BYTES,
+        Type::Embedding(_) => EMBEDDING,
         other => return Err(format!("{other} cannot cross the function boundary")),
     })
 }
@@ -275,6 +287,26 @@ fn encode(args: &[ArrayRef], rows: usize) -> Result<Vec<u8>, String> {
                 .values()
                 .iter()
                 .for_each(|v| out.extend_from_slice(&v.to_le_bytes())),
+            Type::Embedding(n) => {
+                let values = a
+                    .as_any()
+                    .downcast_ref::<FixedSizeListArray>()
+                    .ok_or("embedding")?;
+                out.extend_from_slice(&(n as u32).to_le_bytes());
+                for row in 0..rows {
+                    let value = values.value(row);
+                    let value = value
+                        .as_any()
+                        .downcast_ref::<Float32Array>()
+                        .ok_or("float32 embedding")?;
+                    if values.is_valid(row) && value.null_count() != 0 {
+                        return Err("embedding contains a null element".into());
+                    }
+                    for i in 0..n as usize {
+                        out.extend_from_slice(&value.value(i).to_le_bytes());
+                    }
+                }
+            }
             Type::String | Type::Bytes => {
                 let (offsets, data): (Vec<i32>, &[u8]) = if t == Type::String {
                     let s = a.as_any().downcast_ref::<StringArray>().ok_or("string")?;
@@ -345,6 +377,40 @@ fn decode_output(buf: &[u8], rows: usize, ret: &Type) -> Result<ArrayRef, String
             ScalarBuffer::new(fixed(at)?, 0, rows),
             nulls,
         )),
+        Type::Embedding(n) => {
+            let raw = buf.get(at..at + 4).ok_or("truncated embedding dimension")?;
+            let dimension = u32::from_le_bytes(raw.try_into().map_err(|_| "dimension")?);
+            if *n <= 0 || dimension != *n as u32 {
+                return Err(format!(
+                    "embedding dimension {dimension} does not match declared {n}"
+                ));
+            }
+            at += 4;
+            let count = rows
+                .checked_mul(*n as usize)
+                .ok_or("embedding size overflow")?;
+            let len = count.checked_mul(4).ok_or("embedding size overflow")?;
+            let bytes = buf.get(at..at + len).ok_or("truncated embedding output")?;
+            if buf.len() != at + len {
+                return Err("trailing embedding output".into());
+            }
+            let values = bytes
+                .chunks_exact(4)
+                .map(|v| f32::from_le_bytes(v.try_into().expect("four bytes")))
+                .collect::<Vec<_>>();
+            Arc::new(
+                FixedSizeListArray::try_new(
+                    Arc::new(datafusion_common::arrow::datatypes::Field::new_list_field(
+                        datafusion_common::arrow::datatypes::DataType::Float32,
+                        true,
+                    )),
+                    *n,
+                    Arc::new(Float32Array::from(values)),
+                    nulls,
+                )
+                .map_err(|e| e.to_string())?,
+            )
+        }
         Type::String | Type::Bytes => {
             let raw = buf
                 .get(at..at + (rows + 1) * 4)
@@ -397,6 +463,25 @@ fn sample(t: &Type, rows: usize) -> ArrayRef {
                 .map(|i| (!null(i)).then_some(i as f64 * 1.5))
                 .collect::<Float64Array>(),
         ),
+        Type::Embedding(n) => {
+            let values = (0..rows * *n as usize)
+                .map(|i| i as f32 * 0.25)
+                .collect::<Vec<_>>();
+            Arc::new(
+                FixedSizeListArray::try_new(
+                    Arc::new(datafusion_common::arrow::datatypes::Field::new_list_field(
+                        datafusion_common::arrow::datatypes::DataType::Float32,
+                        true,
+                    )),
+                    *n,
+                    Arc::new(Float32Array::from(values)),
+                    Some(NullBuffer::from(
+                        (0..rows).map(|i| !null(i)).collect::<Vec<_>>(),
+                    )),
+                )
+                .expect("positive checked embedding dimension"),
+            )
+        }
         Type::String => Arc::new(
             (0..rows)
                 .map(|i| (!null(i)).then(|| ["", "MK4700000001", "héllo"][i % 3]))
@@ -438,4 +523,45 @@ pub fn install(
         .expect("lock")
         .insert(entry.hash.clone(), f);
     Ok(entry)
+}
+
+#[cfg(test)]
+mod embedding_tests {
+    use super::*;
+
+    #[test]
+    fn embedding_abi_checks_dimension_truncation_and_element_nulls() {
+        let mut output = parcel_udf::Builder::embedding(2, 3);
+        output.push(0, Some(parcel_udf::Value::Embedding(vec![0.1, 0.2, 0.3])));
+        output.push(1, None);
+        let bytes = output.finish();
+        let array = decode_output(&bytes, 2, &Type::Embedding(3)).unwrap();
+        assert!(array.is_null(1));
+        assert!(decode_output(&bytes, 2, &Type::Embedding(4)).is_err());
+        assert!(decode_output(&bytes[..bytes.len() - 1], 2, &Type::Embedding(3)).is_err());
+        let encoded = encode(&[array], 2).unwrap();
+        let (cols, rows) = parcel_udf::decode(&encoded).unwrap();
+        assert_eq!(rows, 2);
+        parcel_udf::check_dimensions(&cols, &[3]).unwrap();
+        assert!(parcel_udf::check_dimensions(&cols, &[4]).is_err());
+        assert_eq!(
+            <[f32; 3] as parcel_udf::Arg>::get(&cols[0], 0),
+            [0.1, 0.2, 0.3]
+        );
+        let invalid = FixedSizeListArray::try_new(
+            Arc::new(datafusion_common::arrow::datatypes::Field::new_list_field(
+                datafusion_common::arrow::datatypes::DataType::Float32,
+                true,
+            )),
+            3,
+            Arc::new(Float32Array::from(vec![Some(1.0), None, Some(3.0)])),
+            None,
+        )
+        .unwrap();
+        assert!(
+            encode(&[Arc::new(invalid)], 1)
+                .unwrap_err()
+                .contains("null element")
+        );
+    }
 }

@@ -48,12 +48,14 @@ pub mod tag {
     pub const DOUBLE: u8 = 4;
     pub const STRING: u8 = 5;
     pub const BYTES: u8 = 6;
+    pub const EMBEDDING: u8 = 7;
 }
 
 /// A decoded input column, borrowing the input buffer.
 pub struct Col<'a> {
     pub tag: u8,
     pub rows: usize,
+    pub dimension: usize,
     validity: &'a [u8],
     values: &'a [u8],
     offsets: &'a [u8],
@@ -100,6 +102,7 @@ pub fn decode(buf: &[u8]) -> Result<(Vec<Col<'_>>, usize), &'static str> {
         at += 1;
         let validity = buf.get(at..at + bitmap).ok_or("truncated validity")?;
         at += bitmap;
+        let mut dimension = 0;
         let (values, offsets) = match tag {
             tag::BOOL => {
                 let v = buf.get(at..at + bitmap).ok_or("truncated values")?;
@@ -109,6 +112,21 @@ pub fn decode(buf: &[u8]) -> Result<(Vec<Col<'_>>, usize), &'static str> {
             tag::INT | tag::UINT | tag::DOUBLE => {
                 let v = buf.get(at..at + rows * 8).ok_or("truncated values")?;
                 at += rows * 8;
+                (v, &buf[0..0])
+            }
+            tag::EMBEDDING => {
+                let raw = buf.get(at..at + 4).ok_or("truncated dimension")?;
+                dimension = u32_at(raw, 0) as usize;
+                if dimension == 0 {
+                    return Err("embedding dimension must be positive");
+                }
+                at += 4;
+                let len = rows
+                    .checked_mul(dimension)
+                    .and_then(|n| n.checked_mul(4))
+                    .ok_or("embedding size overflow")?;
+                let v = buf.get(at..at + len).ok_or("truncated embedding")?;
+                at += len;
                 (v, &buf[0..0])
             }
             tag::STRING | tag::BYTES => {
@@ -126,6 +144,7 @@ pub fn decode(buf: &[u8]) -> Result<(Vec<Col<'_>>, usize), &'static str> {
         cols.push(Col {
             tag,
             rows,
+            dimension,
             validity,
             values,
             offsets,
@@ -137,6 +156,8 @@ pub fn decode(buf: &[u8]) -> Result<(Vec<Col<'_>>, usize), &'static str> {
 /// An output column under construction.
 pub struct Builder {
     tag: u8,
+    dimension: usize,
+    error: Option<&'static str>,
     rows: usize,
     validity: Vec<u8>,
     values: Vec<u8>,
@@ -148,6 +169,8 @@ impl Builder {
         let bitmap = rows.div_ceil(8);
         let mut b = Builder {
             tag,
+            dimension: 0,
+            error: None,
             rows,
             validity: alloc::vec![0; bitmap],
             values: Vec::new(),
@@ -157,6 +180,15 @@ impl Builder {
             tag::BOOL => b.values = alloc::vec![0; bitmap],
             tag::STRING | tag::BYTES => b.offsets.extend_from_slice(&0u32.to_le_bytes()),
             _ => {}
+        }
+        b
+    }
+
+    pub fn embedding(rows: usize, dimension: usize) -> Builder {
+        let mut b = Self::new(tag::EMBEDDING, rows);
+        b.dimension = dimension;
+        if dimension == 0 || dimension > u32::MAX as usize {
+            b.error = Some("invalid embedding dimension");
         }
         b
     }
@@ -180,6 +212,24 @@ impl Builder {
                 Some(Value::Double(x)) => x.to_le_bytes(),
                 _ => [0; 8],
             }),
+            (tag::EMBEDDING, v) => {
+                let values = match v {
+                    Some(Value::Embedding(v)) => {
+                        if v.len() != self.dimension {
+                            self.error = Some("embedding dimension does not match the output");
+                        }
+                        v
+                    }
+                    None => alloc::vec![0.0; self.dimension],
+                    _ => {
+                        self.error = Some("embedding elements must be float32");
+                        alloc::vec![0.0; self.dimension]
+                    }
+                };
+                for value in values {
+                    self.values.extend_from_slice(&value.to_le_bytes());
+                }
+            }
             (_, v) => {
                 if let Some(Value::Bytes(b)) = v {
                     self.values.extend_from_slice(&b);
@@ -191,11 +241,17 @@ impl Builder {
     }
 
     pub fn finish(self) -> Vec<u8> {
+        if let Some(message) = self.error {
+            return error(message);
+        }
         let mut out =
             Vec::with_capacity(2 + self.validity.len() + self.offsets.len() + self.values.len());
         out.push(0); // status: ok
         out.push(self.tag);
         out.extend_from_slice(&self.validity);
+        if self.tag == tag::EMBEDDING {
+            out.extend_from_slice(&(self.dimension as u32).to_le_bytes());
+        }
         out.extend_from_slice(&self.offsets);
         out.extend_from_slice(&self.values);
         let _ = self.rows;
@@ -210,11 +266,13 @@ pub enum Value {
     Uint(u64),
     Double(f64),
     Bytes(Vec<u8>),
+    Embedding(Vec<f32>),
 }
 
 /// A type a function can take as an argument.
 pub trait Arg<'a>: Sized {
     const TAG: u8;
+    const DIMENSION: usize = 0;
     fn get(col: &Col<'a>, row: usize) -> Self;
 }
 
@@ -270,6 +328,7 @@ impl<'a> Arg<'a> for Vec<u8> {
 /// A type a function can return.
 pub trait Ret {
     const TAG: u8;
+    const DIMENSION: usize = 0;
     fn into_value(self) -> Value;
 }
 impl Ret for bool {
@@ -307,6 +366,40 @@ impl Ret for Vec<u8> {
     fn into_value(self) -> Value {
         Value::Bytes(self)
     }
+}
+
+impl<'a, const N: usize> Arg<'a> for [f32; N] {
+    const TAG: u8 = tag::EMBEDDING;
+    const DIMENSION: usize = N;
+    fn get(col: &Col<'a>, row: usize) -> Self {
+        core::array::from_fn(|i| {
+            let at = (row * N + i) * 4;
+            f32::from_le_bytes(
+                col.values[at..at + 4]
+                    .try_into()
+                    .expect("checked embedding bytes"),
+            )
+        })
+    }
+}
+impl<const N: usize> Ret for [f32; N] {
+    const TAG: u8 = tag::EMBEDDING;
+    const DIMENSION: usize = N;
+    fn into_value(self) -> Value {
+        Value::Embedding(self.to_vec())
+    }
+}
+
+pub fn check_dimensions(cols: &[Col<'_>], dimensions: &[usize]) -> Result<(), &'static str> {
+    if cols.len() != dimensions.len() {
+        return Err("wrong number of argument dimensions");
+    }
+    for (c, n) in cols.iter().zip(dimensions) {
+        if c.tag == tag::EMBEDDING && (*n == 0 || c.dimension != *n) {
+            return Err("embedding dimension does not match the function");
+        }
+    }
+    Ok(())
 }
 
 /// An error output: status 1 and a message.
@@ -393,10 +486,12 @@ macro_rules! export {
                         Err(e) => $crate::error(e),
                         Ok((cols, rows)) => {
                             let tags: &[u8] = &[$(<$ty as $crate::Arg>::TAG),*];
-                            match $crate::check_tags(&cols, tags) {
+                            match $crate::check_tags(&cols, tags).and_then(|()| $crate::check_dimensions(&cols, &[$(<$ty as $crate::Arg>::DIMENSION),*])) {
                                 Err(e) => $crate::error(e),
                                 Ok(()) => {
-                                    let mut b = $crate::Builder::new(<$ret as $crate::Ret>::TAG, rows);
+                                    let mut b = if <$ret as $crate::Ret>::TAG == $crate::tag::EMBEDDING {
+                                        $crate::Builder::embedding(rows, <$ret as $crate::Ret>::DIMENSION)
+                                    } else { $crate::Builder::new(<$ret as $crate::Ret>::TAG, rows) };
                                     for row in 0..rows {
                                         if cols.iter().all(|c| c.is_valid(row)) {
                                             let mut __i = 0usize;
