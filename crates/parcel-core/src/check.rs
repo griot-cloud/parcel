@@ -212,10 +212,10 @@ pub fn check_layers(
     layers: &[Layer],
 ) -> Result<CheckedContract, Vec<Diagnostic>> {
     let mut d: Vec<Diagnostic> = Vec::new();
-    if let Some(terms) = &doc.residency {
-        if let Err(message) = terms.validate() {
-            d.push(Diagnostic::new(Code::Residency, None, message));
-        }
+    if let Some(terms) = &doc.residency
+        && let Err(message) = terms.validate()
+    {
+        d.push(Diagnostic::new(Code::Residency, None, message));
     }
     let layer_of = |id: &str| {
         layers
