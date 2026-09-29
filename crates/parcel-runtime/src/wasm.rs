@@ -394,9 +394,12 @@ fn decode_output(buf: &[u8], rows: usize, ret: &Type) -> Result<ArrayRef, String
             if buf.len() != at + len {
                 return Err("trailing embedding output".into());
             }
+            // `len` is a multiple of four, so there is no remainder to drop.
             let values = bytes
-                .chunks_exact(4)
-                .map(|v| f32::from_le_bytes(v.try_into().expect("four bytes")))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|v| f32::from_le_bytes(*v))
                 .collect::<Vec<_>>();
             Arc::new(
                 FixedSizeListArray::try_new(
