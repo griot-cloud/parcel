@@ -3,7 +3,7 @@ layout: landing
 content_max_width: 68rem
 ---
 
-<div class="parcel-home">
+<div class="griot-home">
 
 # parcel
 
