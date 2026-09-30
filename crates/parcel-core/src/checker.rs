@@ -500,7 +500,7 @@ impl Checker<'_, '_> {
                 if a.ty != b.ty {
                     return self.err(Code::TypeMismatch, mismatch("compare", &a.ty, &b.ty));
                 }
-                if matches!(a.ty, List(_)) {
+                if matches!(a.ty, List(_) | Embedding(_)) {
                     return self.err(
                         Code::OutsideProfile,
                         "list equality is not in the parcel profile",
@@ -597,7 +597,7 @@ impl Checker<'_, '_> {
         let tys: Vec<&Type> = args.iter().map(|a| &a.ty).collect();
         use Type::*;
         let found: Option<(Builtin, Type)> = match (name, method, tys.as_slice()) {
-            ("size", _, [String | Bytes | List(_)]) => Some((Builtin::Size, Int)),
+            ("size", _, [String | Bytes | List(_) | Embedding(_)]) => Some((Builtin::Size, Int)),
             ("startsWith", true, [String, String]) => Some((Builtin::StartsWith, Bool)),
             ("endsWith", true, [String, String]) => Some((Builtin::EndsWith, Bool)),
             ("contains", true, [String, String]) => Some((Builtin::Contains, Bool)),

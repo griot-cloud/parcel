@@ -1,4 +1,5 @@
 //! Tenants' WebAssembly functions: registered, pinned, sandboxed, used by contracts.
+#![cfg(feature = "wasm")]
 
 use std::sync::Arc;
 

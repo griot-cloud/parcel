@@ -35,6 +35,7 @@ pub mod inherit;
 pub mod ir;
 pub mod odcs;
 pub mod registry;
+pub mod residency;
 pub mod translate;
 pub mod types;
 pub mod udfs;
@@ -48,3 +49,4 @@ pub use compile::{
 pub use diag::{Code, Diagnostic};
 pub use document::ContractDoc;
 pub use registry::Registry;
+pub use residency::Residency;

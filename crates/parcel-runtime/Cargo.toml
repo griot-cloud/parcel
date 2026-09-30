@@ -8,7 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-parcel-core = { path = "../parcel-core", version = "0.0.1" }
+parcel-core = { path = "../parcel-core", version = "0.0.3" }
 cel.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 datafusion-common.workspace = true
@@ -22,7 +22,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
-parcel-udf = { path = "../parcel-udf", version = "0.0.1" }
+parcel-udf = { path = "../parcel-udf", version = "0.0.3" }
 wasmtime = { version = "47.0.0", default-features = false, features = ["cranelift", "runtime", "std"], optional = true }
 
 [features]

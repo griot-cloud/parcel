@@ -26,6 +26,7 @@ Use parcel's libraries to compile contracts or integrate their execution into a 
 | `plan::refusal` | Evaluate caller-level `decide` rules. |
 | `plan::param_values` | Bind caller values to compiled expression parameters. |
 | `plan::validate` | Run the validation plan over a table. |
+| `plan::validate_in` | The same, in the caller's session, so the scan reads through object stores registered there. |
 | `plan::dataset_value` | Build the dataset namespace from stored statistics. |
 | `plan::active_shapes` | Evaluate shape exemptions for a caller. |
 | `shape::apply` | Rewrite a query for suppression and aggregate noise; report budget charges. |
@@ -34,7 +35,7 @@ Use parcel's libraries to compile contracts or integrate their execution into a 
 
 A bundle's `from_json` method parses it; call `verify` before using its executable artifacts. Applications must also register the required functions with their DataFusion sessions.
 
-The runtime's `wasm` feature is enabled by default. `substrait` enables plan export and requires `protoc` at build time.
+The runtime's `wasm` feature is enabled by default. Without it, `Bundle::verify` refuses a bundle that carries a function, naming it. `substrait` enables plan export and requires `protoc` at build time.
 
 ## Integrating enforcement
 

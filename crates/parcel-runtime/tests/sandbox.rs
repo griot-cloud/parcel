@@ -1,4 +1,5 @@
 //! The sandbox holds: runaway loops run out of fuel, memory bombs hit the cap, lies are caught.
+#![cfg(feature = "wasm")]
 
 use parcel_core::registry::FunctionManifest;
 use parcel_runtime::wasm::install;

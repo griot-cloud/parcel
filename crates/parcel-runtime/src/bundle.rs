@@ -140,6 +140,13 @@ impl Bundle {
         serde_json::from_str(s)
     }
 
+    /// Verified, inherited placement terms. Invalid bundles and absent terms deny permission.
+    pub fn residency(&self) -> parcel_core::Residency {
+        self.verify()
+            .map(|c| c.contract.residency)
+            .unwrap_or_default()
+    }
+
     pub fn schema(&self) -> Result<Schema, String> {
         schema_from_defs(&self.row_schema)
     }
@@ -150,10 +157,22 @@ impl Bundle {
             return Err(format!("unknown bundle format `{}`", self.format));
         }
         let schema = self.schema()?;
+        #[cfg_attr(not(feature = "wasm"), allow(unused_mut))]
         let mut registry = Registry::builtin();
+        #[cfg(feature = "wasm")]
         for f in &self.functions {
             let module = hex::decode(&f.module).map_err(|e| e.to_string())?;
             registry.insert(crate::wasm::install(&module, &f.manifest, &f.owner)?);
+        }
+        // Without the runtime a function cannot be loaded, so the contract cannot be
+        // recompiled to its hash: say so, rather than fail on an unknown function later.
+        #[cfg(not(feature = "wasm"))]
+        if let Some(f) = self.functions.first() {
+            return Err(format!(
+                "the bundle carries WebAssembly function `{}` (owner `{}`), and this build of \
+                 parcel-runtime has no `wasm` feature to load it",
+                f.manifest.name, f.owner
+            ));
         }
         let c = compile_with(&self.document, &schema, &registry, &|n| {
             self.ancestors.iter().find(|a| a.contract == n).cloned()
@@ -164,6 +183,9 @@ impl Bundle {
                 .collect::<Vec<_>>()
                 .join("; ")
         })?;
+        if c.contract.contract_hash != self.contract_hash {
+            return Err("contract hash mismatch".into());
+        }
         if c.contract.compilation_hash != self.compilation_hash {
             return Err(format!(
                 "compilation hash mismatch: bundle says {}, recompiling gives {}",
