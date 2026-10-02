@@ -15,7 +15,7 @@ If the document has multiple schema objects, choose one with `--object NAME`. Wi
 | `unique` | A distinct-count guarantee with `on_fail: annotate`. |
 | Quality rules with `engine: parcel` | parcel rule definitions. |
 
-The importer prints notes for content it cannot preserve. Read those notes and review the generated binding, types and failure actions before use. Then check the result against representative data:
+The importer prints notes for content it cannot preserve, including `servers`. The generated binding is a Parquet placeholder, `{parquet: data/<object>/}`; replace it with the data's Parquet location or its Iceberg table (`{iceberg: namespace.table}`). Read the notes and review the binding, types and failure actions before use. Then check the result against representative data:
 
 ```bash
 parcel check contract.yaml --data sample.csv

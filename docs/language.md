@@ -14,7 +14,7 @@ Contracts are YAML or JSON documents. Run `parcel schema` for the JSON Schema, o
 | `version` | Yes | Unsigned integer version. |
 | `owner` | No | Tenant whose registered functions the rules may use. |
 | `inherits` | No | Parent contract name. See {doc}`authoring`. |
-| `binding` | Unless inherited | `{parquet: path, partitioned_by: [columns]}`. |
+| `binding` | Unless inherited | `{parquet: path}` or `{iceberg: namespace.table}`, with optional `partitioned_by: [columns]`. See [Bindings](#bindings). |
 | `expose` | Unless inherited | List of `{name, type}` columns available to queries. |
 | `rules` | No | List of the operations below. |
 | `extensions` | No | Typed custom fields under `row`, `ctx` and `dataset`. |
@@ -22,6 +22,25 @@ Contracts are YAML or JSON documents. Run `parcel schema` for the JSON Schema, o
 | `dataset_other` | No | List of `{field, value}` or `{field, expr}` producers for `dataset.other`. |
 
 `expose` is a document field, not an `op` in the rules list. A transformed column may have a different type from its source when `expose` declares the output type.
+
+## Bindings
+
+A binding names where the data is, in exactly one of two forms:
+
+| Form | Value | Example |
+| --- | --- | --- |
+| `parquet` | A Parquet file, directory or URL. | `{parquet: data/orders/}` |
+| `iceberg` | An Iceberg table: one or more namespace parts and a table name, joined with `.`. | `{iceberg: sales.orders}` |
+
+Each part of an Iceberg identifier starts with a letter or underscore, followed by letters, digits or underscores; `lake.sales.orders` names the table `orders` in the namespace `lake.sales`. A binding that names both forms, or neither, is refused, as is an identifier without a namespace (`orders`), with an empty part (`a..b`) or with other characters (`a.b c`).
+
+Either form may add `partitioned_by`, a list of columns of the bound schema:
+
+```yaml
+binding: {iceberg: sales.orders, partitioned_by: [region]}
+```
+
+A child contract may omit its binding to take its parent's whole binding, or repeat it exactly; it cannot name another location or table, the other form, or different partitioning.
 
 ## Rule operations
 

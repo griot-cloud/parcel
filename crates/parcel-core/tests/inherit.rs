@@ -185,3 +185,68 @@ fn hiding_a_transformed_column_drops_its_transform() {
     assert_eq!(c.contract.projection.len(), 1);
     assert!(c.contract.row_rules.iter().all(|r| r.id != "mask_email"));
 }
+
+const ICEBERG_BASE: &str = r#"
+contract: lake/base
+version: 1
+binding: {iceberg: lake.sales.orders, partitioned_by: [region]}
+expose:
+  - {name: order_id, type: int64}
+  - {name: region, type: utf8}
+"#;
+
+fn resolve_over_iceberg(
+    child: &str,
+) -> Result<parcel_core::Compilation, Vec<parcel_core::Diagnostic>> {
+    let s = store(&[ICEBERG_BASE, child]);
+    let doc = ContractDoc::parse(child).unwrap();
+    compile_with(&doc, &common::orders_schema(), &Registry::builtin(), &|n| {
+        s.get(n).cloned()
+    })
+}
+
+#[test]
+fn a_child_takes_its_parents_whole_iceberg_binding() {
+    let parent = ContractDoc::parse(ICEBERG_BASE).unwrap().binding.unwrap();
+    for child in [
+        "contract: x\nversion: 1\ninherits: lake/base\n",
+        "contract: x\nversion: 1\ninherits: lake/base\nbinding: {iceberg: lake.sales.orders, partitioned_by: [region]}\n",
+    ] {
+        let c = resolve_over_iceberg(child).unwrap_or_else(|d| panic!("{child}\n{d:#?}"));
+        assert_eq!(c.contract.binding, parent, "{child}");
+    }
+}
+
+#[test]
+fn a_child_binding_never_mixes_with_its_parents() {
+    for (child, says) in [
+        // The other form.
+        (
+            "contract: x\nversion: 1\ninherits: lake/base\nbinding: {parquet: data/orders/, partitioned_by: [region]}\n",
+            "Parquet data where its parent `lake/base` binds Iceberg",
+        ),
+        (
+            "contract: x\nversion: 1\ninherits: sales/base\nbinding: {iceberg: sales.orders, partitioned_by: [region]}\n",
+            "Iceberg data where its parent `sales/base` binds Parquet",
+        ),
+        // The same form, naming the table without the parent's partitioning: not a merge.
+        (
+            "contract: x\nversion: 1\ninherits: lake/base\nbinding: {iceberg: lake.sales.orders}\n",
+            "binds different data",
+        ),
+        // Another table.
+        (
+            "contract: x\nversion: 1\ninherits: lake/base\nbinding: {iceberg: lake.sales.returns, partitioned_by: [region]}\n",
+            "binds different data",
+        ),
+    ] {
+        let errs = resolve_over_iceberg(child)
+            .err()
+            .unwrap_or_else(|| panic!("accepted:\n{child}"));
+        assert!(
+            errs.iter()
+                .any(|d| d.code == Code::Inheritance && d.message.contains(says)),
+            "{child}\n{errs:#?}"
+        );
+    }
+}

@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use crate::document::{
     AssertOnFail, AssertRule, Binding, ContractDoc, ExposeColumn, GuaranteeOnFail, GuaranteeRule,
-    Rule,
+    Rule, Source,
 };
 
 /// The result of an import: a contract to review, and what did not carry over.
@@ -162,7 +162,7 @@ pub fn import(source: &str, object: Option<&str>) -> Result<Imported, String> {
         import_quality(q, "the contract", &mut rules, &mut notes);
     }
     if v.get("servers").is_some() {
-        notes.push("`servers` are not imported; set the binding to where the data lives".into());
+        notes.push("`servers` are not imported; set the binding (`parquet` or `iceberg`) to where the data lives".into());
     }
     for key in ["slaProperties", "support", "team", "roles", "price"] {
         if v.get(key).is_some() {
@@ -177,7 +177,7 @@ pub fn import(source: &str, object: Option<&str>) -> Result<Imported, String> {
         inherits: None,
         residency: None,
         binding: Some(Binding {
-            parquet: format!("data/{}/", slug(obj_name)),
+            source: Source::Parquet(format!("data/{}/", slug(obj_name))),
             partitioned_by: Vec::new(),
         }),
         expose: Some(expose),

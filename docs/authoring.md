@@ -50,7 +50,7 @@ rules:
     expr: row.amount >= 100
 ```
 
-It retains both supplier access and positive-amount checks, then limits results to amounts of at least 100. The CLI finds parent contracts by name among YAML and JSON files in the same directory. A child cannot remove a parent rule, expose a hidden column or bind different data.
+It retains both supplier access and positive-amount checks, then limits results to amounts of at least 100. The CLI finds parent contracts by name among YAML and JSON files in the same directory. A child cannot remove a parent rule, expose a hidden column or bind different data: it omits `binding` or repeats its parent's exactly, in the same form (`parquet` or `iceberg`).
 
 ## Other ways to author and use contracts
 
