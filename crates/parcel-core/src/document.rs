@@ -73,12 +73,160 @@ pub struct DatasetProducer {
 }
 
 /// Where the data physically is. Callers never see this.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+///
+/// Written as exactly one of `parquet: <location>` or `iceberg: <namespace.table>`, with an
+/// optional `partitioned_by`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "BindingFields", into = "BindingFields")]
 pub struct Binding {
-    pub parquet: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source: Source,
     pub partitioned_by: Vec<String>,
+}
+
+/// The data a binding names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// A Parquet location: a file, a directory or a URL.
+    Parquet(String),
+    /// An Iceberg table in a catalog.
+    Iceberg(IcebergTable),
+}
+
+/// An Iceberg table identifier: one or more namespace parts and a table name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IcebergTable {
+    pub namespace: Vec<String>,
+    pub table: String,
+}
+
+impl IcebergTable {
+    /// Parse a dotted `namespace.table` identifier, e.g. `sales.orders` or `lake.sales.orders`.
+    pub fn parse(s: &str) -> Result<IcebergTable, String> {
+        let parts: Vec<&str> = s.split('.').collect();
+        let refuse =
+            |why: &str| format!("`iceberg: {s:?}` is not a `namespace.table` identifier: {why}");
+        if parts.len() < 2 {
+            return Err(refuse("it names no namespace"));
+        }
+        if let Some(bad) = parts.iter().find(|p| !is_identifier(p)) {
+            return Err(refuse(&if bad.is_empty() {
+                "a part is empty".to_owned()
+            } else {
+                format!(
+                    "`{bad}` is not an identifier (a letter or `_`, then letters, digits or `_`)"
+                )
+            }));
+        }
+        let (table, namespace) = parts.split_last().expect("at least two parts");
+        Ok(IcebergTable {
+            namespace: namespace.iter().map(|p| (*p).to_owned()).collect(),
+            table: (*table).to_owned(),
+        })
+    }
+}
+
+impl std::fmt::Display for IcebergTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for part in &self.namespace {
+            write!(f, "{part}.")?;
+        }
+        f.write_str(&self.table)
+    }
+}
+
+fn is_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The pattern of an Iceberg identifier, for the JSON Schema; [`IcebergTable::parse`] agrees.
+const ICEBERG_PATTERN: &str = r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$";
+
+/// A binding as written.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BindingFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parquet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    iceberg: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    partitioned_by: Vec<String>,
+}
+
+impl TryFrom<BindingFields> for Binding {
+    type Error = String;
+
+    fn try_from(f: BindingFields) -> Result<Binding, String> {
+        let source = match (f.parquet, f.iceberg) {
+            (Some(path), None) => Source::Parquet(path),
+            (None, Some(table)) => Source::Iceberg(IcebergTable::parse(&table)?),
+            (Some(_), Some(_)) => {
+                return Err(
+                    "a binding names exactly one of `parquet` or `iceberg`; this one names both"
+                        .into(),
+                );
+            }
+            (None, None) => {
+                return Err(
+                    "a binding names exactly one of `parquet` or `iceberg`; this one names neither"
+                        .into(),
+                );
+            }
+        };
+        Ok(Binding {
+            source,
+            partitioned_by: f.partitioned_by,
+        })
+    }
+}
+
+impl From<Binding> for BindingFields {
+    fn from(b: Binding) -> BindingFields {
+        let (parquet, iceberg) = match b.source {
+            Source::Parquet(path) => (Some(path), None),
+            Source::Iceberg(table) => (None, Some(table.to_string())),
+        };
+        BindingFields {
+            parquet,
+            iceberg,
+            partitioned_by: b.partitioned_by,
+        }
+    }
+}
+
+impl JsonSchema for Binding {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Binding".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let partitioned_by = serde_json::json!({"type": "array", "items": {"type": "string"}});
+        schemars::json_schema!({
+            "description": "Where the data physically is. Callers never see this. Exactly one of `parquet` (a location) or `iceberg` (a `namespace.table` identifier).",
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "parquet": {"type": "string"},
+                        "partitioned_by": partitioned_by,
+                    },
+                    "required": ["parquet"],
+                    "additionalProperties": false,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "iceberg": {"type": "string", "pattern": ICEBERG_PATTERN},
+                        "partitioned_by": partitioned_by,
+                    },
+                    "required": ["iceberg"],
+                    "additionalProperties": false,
+                },
+            ],
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

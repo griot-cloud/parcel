@@ -2,7 +2,9 @@
 //!
 //! - `expose` is intersected: a child lists a subset of its parent's columns, with the same
 //!   types, or omits the section to keep them all.
-//! - `binding` is shared: a child omits it or repeats the parent's.
+//! - `binding` is shared: a child omits it and takes the parent's whole binding, or repeats the
+//!   parent's whole binding, in the same form (`parquet` or `iceberg`) and with the same
+//!   partitioning. The two forms never mix.
 //! - `decide`, `admit`, `assert` and `guarantee` rules are unioned; `shape` operators accumulate.
 //! - `transform` rules compose, parent first: a child's rules see the parent's transformed
 //!   values, and a child transform may read only what the parent exposes.
@@ -13,7 +15,7 @@ use std::collections::BTreeSet;
 
 use crate::check::Layer;
 use crate::diag::{Code, Diagnostic};
-use crate::document::ContractDoc;
+use crate::document::{ContractDoc, Source};
 use crate::types::parse_type_name;
 
 /// A flattened contract and the layers it came from, root first.
@@ -69,6 +71,16 @@ fn resolve_inner(
     let binding = match (&doc.binding, &p.binding) {
         (None, b) => b.clone(),
         (Some(c), Some(pb)) if c == pb => Some(c.clone()),
+        (Some(c), Some(pb))
+            if std::mem::discriminant(&c.source) != std::mem::discriminant(&pb.source) =>
+        {
+            return Err(err(format!(
+                "`{}` binds {} data where its parent `{parent_name}` binds {}; a child contract is a view of its parent's data",
+                doc.contract,
+                form(&c.source),
+                form(&pb.source),
+            )));
+        }
         (Some(_), _) => {
             return Err(err(format!(
                 "`{}` binds different data from its parent `{parent_name}`; a child contract is a view of its parent's data",
@@ -176,4 +188,11 @@ fn resolve_inner(
             .or_else(|| p.dataset_other.clone()),
     };
     Ok(Resolved { doc: flat, layers })
+}
+
+fn form(source: &Source) -> &'static str {
+    match source {
+        Source::Parquet(_) => "Parquet",
+        Source::Iceberg(_) => "Iceberg",
+    }
 }

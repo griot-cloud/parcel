@@ -102,22 +102,45 @@
   ],
   "$defs": {
     "Binding": {
-      "description": "Where the data physically is. Callers never see this.",
-      "type": "object",
-      "properties": {
-        "parquet": {
-          "type": "string"
+      "description": "Where the data physically is. Callers never see this. Exactly one of `parquet` (a location) or `iceberg` (a `namespace.table` identifier).",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "parquet": {
+              "type": "string"
+            },
+            "partitioned_by": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "parquet"
+          ],
+          "additionalProperties": false
         },
-        "partitioned_by": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+        {
+          "type": "object",
+          "properties": {
+            "iceberg": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$"
+            },
+            "partitioned_by": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "iceberg"
+          ],
+          "additionalProperties": false
         }
-      },
-      "additionalProperties": false,
-      "required": [
-        "parquet"
       ]
     },
     "Residency": {
