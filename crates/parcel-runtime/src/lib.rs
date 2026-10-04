@@ -18,6 +18,7 @@
 //! peQL is the runtime that does.
 
 pub mod bundle;
+pub mod compiled;
 pub mod differential;
 pub mod export;
 pub mod plan;

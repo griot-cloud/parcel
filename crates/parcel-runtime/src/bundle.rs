@@ -296,7 +296,7 @@ pub fn session() -> SessionContext {
 }
 
 /// Replace the compile-time placeholder source with an empty provider `datafusion-proto` can encode.
-fn portable_plan(plan: &LogicalPlan, schema: &Schema) -> DFResult<LogicalPlan> {
+pub(crate) fn portable_plan(plan: &LogicalPlan, schema: &Schema) -> DFResult<LogicalPlan> {
     let schema: SchemaRef = Arc::new(schema.clone());
     let out = plan.clone().transform_up(|node| {
         if let LogicalPlan::TableScan(ts) = &node

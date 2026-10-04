@@ -30,7 +30,7 @@ use crate::ir::*;
 use crate::types::Type;
 
 /// A `ctx`-only subtree lifted out of a row expression and bound per query.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
 pub struct CtxParam {
     /// Placeholder name without the `$`.
     pub id: String,
@@ -67,8 +67,16 @@ impl Params {
 pub fn placeholder(id: &str, ty: &Type) -> Expr {
     Expr::Placeholder(Placeholder {
         id: format!("${id}"),
-        field: Some(Arc::new(Field::new(id, ty.to_arrow(), true))),
+        field: Some(placeholder_field(id, ty.to_arrow())),
     })
+}
+
+/// The field of placeholder `$<id>`: named `id`, nullable.
+pub fn placeholder_field(
+    id: &str,
+    data_type: DataType,
+) -> datafusion_common::arrow::datatypes::FieldRef {
+    Arc::new(Field::new(id, data_type, true))
 }
 
 pub struct Translator<'a> {
@@ -365,15 +373,30 @@ pub fn user_function_udf(
 ) -> datafusion_expr::ScalarUDF {
     datafusion_expr::ScalarUDF::new_from_impl(UserFunction {
         pin: pin.clone(),
-        signature: datafusion_expr::Signature::exact(args, datafusion_expr::Volatility::Immutable),
+        signature: datafusion_expr::Signature::exact(
+            args.clone(),
+            datafusion_expr::Volatility::Immutable,
+        ),
+        args,
         ret,
     })
+}
+
+/// What [`user_function_udf`] made `udf` from: its pin, argument types and return type.
+/// `None` for any other function.
+pub fn user_function_parts(
+    udf: &datafusion_expr::ScalarUDF,
+) -> Option<(&crate::registry::FunctionPin, &[DataType], &DataType)> {
+    udf.inner()
+        .downcast_ref::<UserFunction>()
+        .map(|f| (&f.pin, f.args.as_slice(), &f.ret))
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 struct UserFunction {
     pin: crate::registry::FunctionPin,
     signature: datafusion_expr::Signature,
+    args: Vec<DataType>,
     ret: DataType,
 }
 

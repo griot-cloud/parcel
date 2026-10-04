@@ -15,7 +15,7 @@ datafusion-common.workspace = true
 datafusion = { version = "55.1.0", default-features = true }
 datafusion-proto = "55.1.0"
 datafusion-substrait = { version = "55.1.0", default-features = false, optional = true }
-prost = { version = "0.14", optional = true }
+prost = "0.14"
 thiserror.workspace = true
 regex = "1"
 serde.workspace = true
@@ -30,7 +30,7 @@ default = ["wasm"]
 # Load tenants' WebAssembly functions (design 7.4).
 wasm = ["dep:wasmtime"]
 # Substrait export of the validation plan. Needs `protoc` at build time.
-substrait = ["dep:datafusion-substrait", "dep:prost"]
+substrait = ["dep:datafusion-substrait"]
 
 [dev-dependencies]
 wat = "1.259.0"
