@@ -1,6 +1,6 @@
 # Quickstart
 
-Check a contract over four orders, compare access for a company and one supplier, then compile it into a bundle.
+Check a contract over four orders, compare access for a company and one supplier, then compile it.
 
 ## Install parcel
 
@@ -80,12 +80,12 @@ The caller counts include row access rules and drop-level assertions. They are a
 
 To require every amount to pass, change `on_fail: drop` to `on_fail: deny` and rerun the check. The verdict becomes invalid and the command exits unsuccessfully. Restore `drop` before continuing.
 
-## Compile a bundle
+## Compile it
 
 ```bash
-parcel compile orders.yaml --schema orders.csv -o orders.parcel.json
+parcel compile orders.yaml --schema orders.csv -o orders.parcel
 ```
 
-The schema tells parcel which columns and types the expressions must work with. Compilation checks the rules but does not validate the data values. The output file contains the contract, source schema and compiled expressions and plans.
+The schema tells parcel which columns and types the expressions must work with. Compilation checks the rules but does not validate the data values. The output file is the compiled contract as bytes: its expressions and plans, ready to run.
 
-Use the bundle with a compatible engine such as [peQL](https://griot-cloud.github.io/peQL/quickstart.html), which manages data and applies the rules to queries. To keep writing contracts, continue to {doc}`authoring`.
+Load it into a compatible engine such as [peQL](https://griot-cloud.github.io/peQL/quickstart.html), which manages data and applies the rules to queries. To keep writing contracts, continue to {doc}`authoring`.

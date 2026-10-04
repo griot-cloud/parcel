@@ -54,7 +54,7 @@ Different operations permit different namespaces. An access policy can depend on
 
 **Checking** runs a contract against sample data. It reports quality failures, tests caller access and compares rule results from a CEL interpreter with those from DataFusion, the SQL engine parcel compiles for.
 
-**Compiling** produces expressions and plans an engine can execute. A **bundle** packages these results, the contract, its schema and any custom functions in one file.
+**Compiling** produces expressions and plans an engine can execute. The **compiled contract** is these results as bytes, which an engine loads as given.
 
 **Enforcement** happens in the application or query engine using those results. [peQL](https://griot-cloud.github.io/peQL/) uses parcel to validate data and apply contracts to SQL queries. Running `parcel check` alone does not change or protect the source files.
 

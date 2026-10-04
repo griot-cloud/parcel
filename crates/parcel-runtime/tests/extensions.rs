@@ -5,9 +5,10 @@ use std::sync::Arc;
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::MemTable;
+use parcel_core::compile::Compilation;
 use parcel_core::{Code, ContractDoc, Registry, compile};
 use parcel_runtime::Caller;
-use parcel_runtime::bundle::Bundle;
+use parcel_runtime::compiled::CompiledBytes;
 use parcel_runtime::differential::differential;
 use parcel_runtime::plan::{selectivity, validate};
 
@@ -194,12 +195,9 @@ async fn extensions_end_to_end() {
     );
     assert!(diff.evaluations > 1000);
 
-    // Bundles carry enrichers and verify.
-    let b = Bundle::new(&doc, &[], &schema(), &comp).unwrap();
-    Bundle::from_json(&b.to_json().unwrap())
-        .unwrap()
-        .verify()
-        .unwrap();
+    // The compiled bytes carry the enrichers.
+    let back = Compilation::from_bytes(&comp.to_bytes().unwrap()).unwrap();
+    assert_eq!(back.contract.enrich.len(), comp.contract.enrich.len());
 }
 
 #[test]

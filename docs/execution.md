@@ -33,9 +33,9 @@ Caller-dependent expressions use parameters. The engine binds those parameters f
 
 ## Bundles and verification
 
-`parcel compile -o orders.parcel.json` packages the document, ancestor contracts, source schema, pinned custom functions and compiled outputs. A compatible runtime verifies a bundle by recompiling it and comparing its hashes and executable artifacts.
+`parcel compile -o orders.parcel` writes the compiled contract as bytes (`Compilation::to_bytes`): every expression and the validation plan, with any pinned custom function inside the expressions. A runtime loads them with `Compilation::from_bytes` and never compiles them again. parcel neither hashes nor signs these bytes: whoever hands them to an engine vouches for them.
 
-A compilation hash identifies the compiled result and depends on the compiler version and pinned functions. Keep the producing compiler and consuming runtime compatible; a bundle is not a promise that any Arrow engine or compiler version can execute it.
+A compilation hash identifies the compiled result and depends on the compiler version and pinned functions. Keep the producing compiler and consuming runtime compatible; compiled bytes are not a promise that any Arrow engine or compiler version can execute it.
 
 ## The engine boundary
 

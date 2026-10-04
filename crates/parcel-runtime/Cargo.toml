@@ -1,6 +1,6 @@
 [package]
 name = "parcel-runtime"
-description = "What an engine needs to run parcel artifacts: functions, the reference interpreter, bundles, validation"
+description = "What an engine needs to run parcel artifacts: functions, the reference interpreter, compiled contracts as bytes, validation"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

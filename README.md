@@ -17,7 +17,7 @@ parcel is a data contract language and compiler that lets you define data qualit
 | --- | --- |
 | [Getting started](docs/getting-started.md) | Concepts and a working example with four orders and two callers. |
 | [Writing contracts](docs/authoring.md) | Rules, testing, inheritance, imports and custom functions. |
-| [How it works](docs/execution.md) | Compilation, bundles and what an engine enforces. |
+| [How it works](docs/execution.md) | Compilation, compiled bytes and what an engine enforces. |
 | [Reference](docs/reference.md) | Contract fields, expressions, commands and Rust libraries. |
 
 Contracts use YAML or JSON with CEL expressions for their rules. parcel checks and compiles them; [peQL](https://griot-cloud.github.io/peQL/) manages data and enforces them on SQL queries.

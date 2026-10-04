@@ -6,11 +6,12 @@ use std::sync::Arc;
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::MemTable;
+use parcel_core::compile::Compilation;
 use parcel_core::registry::FunctionEntry;
 use parcel_core::registry::FunctionManifest;
 use parcel_core::{ContractDoc, Registry, compile};
 use parcel_runtime::Caller;
-use parcel_runtime::bundle::{Bundle, BundledFunction};
+use parcel_runtime::compiled::CompiledBytes;
 use parcel_runtime::differential::differential;
 use parcel_runtime::plan::{selectivity, validate};
 use parcel_runtime::wasm::install;
@@ -147,20 +148,16 @@ async fn user_functions_end_to_end() {
     );
     assert!(diff.evaluations > 1500);
 
-    // A bundle carries the modules; a verifier recompiles and checks it with nothing else.
-    let functions = FUNCTIONS
-        .iter()
-        .map(|(n, s)| BundledFunction {
-            owner: "kplc".into(),
-            manifest: manifest(n, s),
-            module: hex::encode(MODULE),
-        })
-        .collect();
-    let bundle = Bundle::with_functions(&doc, &[], &schema(), &comp, functions).unwrap();
-    Bundle::from_json(&bundle.to_json().unwrap())
-        .unwrap()
-        .verify()
+    // The compiled bytes carry the pinned functions and run as compiled.
+    let back = Compilation::from_bytes(&comp.to_bytes().unwrap()).unwrap();
+    let diff = differential(&back, &batch(), &[caller("47")])
+        .await
         .unwrap();
+    assert!(
+        diff.passed(),
+        "{:#?}",
+        &diff.mismatches[..diff.mismatches.len().min(5)]
+    );
 }
 
 #[test]

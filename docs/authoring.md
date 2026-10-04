@@ -33,7 +33,7 @@ Include callers who should receive different results. Test missing values and fa
 
 `check` validates the supplied dataset and compares rule evaluators on up to 1,000 rows by default. `--sample N` changes the latter limit; it does not limit the dataset used for the validation verdict.
 
-For CSV identifiers that look numeric, preserve their intended type with an override, such as `--type supplier_id=utf8`. Compile a bundle using a schema representative of the data the engine will actually serve.
+For CSV identifiers that look numeric, preserve their intended type with an override, such as `--type supplier_id=utf8`. Compile against a schema representative of the data the engine will actually serve.
 
 ## Reuse a parent contract
 

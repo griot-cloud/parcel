@@ -12,16 +12,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::catalog::TableProvider;
 use datafusion::common::TableReference;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::datasource::empty::EmptyTable;
+use datafusion::datasource::provider_as_source;
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::expr::Placeholder;
 use datafusion::logical_expr::logical_plan::builder::LogicalTableSource;
 use datafusion::logical_expr::{Expr, Extension, LogicalPlan, LogicalPlanBuilder, ScalarUDF};
+use datafusion::prelude::SessionContext;
 use datafusion_proto::bytes::{
     logical_plan_from_bytes_with_extension_codec, logical_plan_to_bytes_with_extension_codec,
 };
@@ -41,8 +43,6 @@ use parcel_core::translate::{CtxParam, placeholder_field, user_function_parts, u
 use parcel_core::types::Type;
 use prost::Message;
 use serde::{Deserialize, Serialize};
-
-use crate::bundle::{ColumnDef, portable_plan, schema_from_defs, schema_to_defs, session};
 
 /// The format the bytes are in.
 pub const FORMAT: &str = "parcel-compiled/1";
@@ -557,5 +557,106 @@ impl LogicalExtensionCodec for Codec {
             args,
             parse(&form.ret)?,
         )))
+    }
+}
+
+/// A tenant's WebAssembly function a compiled contract is pinned to, carried beside it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BundledFunction {
+    pub owner: String,
+    pub manifest: parcel_core::registry::FunctionManifest,
+    /// The module, hex.
+    pub module: String,
+}
+
+/// A session with parcel's own functions registered, for decoding.
+pub fn session() -> SessionContext {
+    let ctx = SessionContext::new();
+    for udf in parcel_core::udfs::parcel_udfs() {
+        ctx.register_udf(udf);
+    }
+    ctx
+}
+
+/// Replace the compile-time placeholder source with an empty provider `datafusion-proto` can encode.
+pub(crate) fn portable_plan(plan: &LogicalPlan, schema: &Schema) -> DFResult<LogicalPlan> {
+    let schema: SchemaRef = Arc::new(schema.clone());
+    let out = plan.clone().transform_up(|node| {
+        if let LogicalPlan::TableScan(ts) = &node
+            && ts.table_name.table() == BINDING_TABLE
+        {
+            let empty: Arc<dyn TableProvider> = Arc::new(EmptyTable::new(schema.clone()));
+            let scan = LogicalPlanBuilder::scan(
+                TableReference::bare(BINDING_TABLE),
+                provider_as_source(empty),
+                None,
+            )?
+            .build()?;
+            return Ok(Transformed::yes(scan));
+        }
+        Ok(Transformed::no(node))
+    })?;
+    out.data.recompute_schema()
+}
+
+/// One column of a persisted Arrow schema. `type` is Arrow's display form, which parses back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ColumnDef {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub data_type: String,
+    pub nullable: bool,
+}
+
+pub fn schema_to_defs(schema: &Schema) -> Vec<ColumnDef> {
+    schema
+        .fields()
+        .iter()
+        .map(|f| ColumnDef {
+            name: f.name().clone(),
+            data_type: f.data_type().to_string(),
+            nullable: f.is_nullable(),
+        })
+        .collect()
+}
+
+pub fn schema_from_defs(defs: &[ColumnDef]) -> Result<Schema, String> {
+    use std::str::FromStr;
+    let fields = defs
+        .iter()
+        .map(|d| {
+            let t = datafusion::arrow::datatypes::DataType::from_str(&d.data_type)
+                .map_err(|e| format!("column `{}`: {e}", d.name))?;
+            Ok(datafusion::arrow::datatypes::Field::new(
+                &d.name, t, d.nullable,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(Schema::new(fields))
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+    use datafusion::arrow::datatypes::{DataType, Field, TimeUnit};
+
+    #[test]
+    fn schemas_round_trip() {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new(
+                "b",
+                DataType::List(Field::new_list_field(DataType::Utf8, true).into()),
+                true,
+            ),
+            Field::new("c", DataType::Decimal128(18, 2), true),
+            Field::new(
+                "d",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            ),
+            Field::new("e", DataType::Date32, false),
+        ]);
+        assert_eq!(schema_from_defs(&schema_to_defs(&schema)).unwrap(), schema);
     }
 }
