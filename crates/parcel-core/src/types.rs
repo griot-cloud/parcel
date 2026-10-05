@@ -127,6 +127,49 @@ impl serde::Serialize for Type {
     }
 }
 
+/// The inverse of [`Type`]'s display form.
+impl std::str::FromStr for Type {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Type, String> {
+        let s = s.trim();
+        Ok(match s {
+            "bool" => Type::Bool,
+            "int" => Type::Int,
+            "uint" => Type::Uint,
+            "double" => Type::Double,
+            "string" => Type::String,
+            "bytes" => Type::Bytes,
+            "timestamp" => Type::Timestamp,
+            "duration" => Type::Duration,
+            _ => {
+                if let Some(n) = s
+                    .strip_prefix("fixed_size_list<float32, ")
+                    .and_then(|r| r.strip_suffix('>'))
+                {
+                    Type::Embedding(n.parse().map_err(|_| format!("`{s}` is not a type"))?)
+                } else if let Some(e) = s.strip_prefix("list<").and_then(|r| r.strip_suffix('>')) {
+                    Type::list(e.parse()?)
+                } else if let Some(sc) = s
+                    .strip_prefix(&format!("decimal({DECIMAL_PRECISION},"))
+                    .and_then(|r| r.strip_suffix(')'))
+                {
+                    Type::Decimal(sc.parse().map_err(|_| format!("`{s}` is not a type"))?)
+                } else {
+                    return Err(format!("`{s}` is not a type"));
+                }
+            }
+        })
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Type {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Type, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -256,6 +299,26 @@ pub fn exposable_as(raw: &DataType, declared: &DataType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn types_parse_back_from_their_display_form() {
+        for t in [
+            Type::Bool,
+            Type::Int,
+            Type::Uint,
+            Type::Double,
+            Type::String,
+            Type::Bytes,
+            Type::Timestamp,
+            Type::Duration,
+            Type::list(Type::list(Type::Decimal(2))),
+            Type::Embedding(3),
+            Type::Decimal(4),
+        ] {
+            assert_eq!(t.to_string().parse::<Type>().unwrap(), t);
+        }
+        assert!("list<nope>".parse::<Type>().is_err());
+    }
 
     #[test]
     fn parses_type_names() {

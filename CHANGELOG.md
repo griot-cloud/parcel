@@ -3,6 +3,14 @@
 A version reaches users when it lands on `main` untagged: CI builds, tests and publishes it,
 then tags it. See [CONTRIBUTING](docs/contributing.md#releasing).
 
+## Unreleased
+
+- A compiled contract round-trips through bytes: `Compilation::to_bytes` and
+  `Compilation::from_bytes` (`parcel_runtime::compiled`). Loading never compiles.
+- The `parcel-bundle/1` bundle and `Bundle::verify`, which recompiled it, are removed.
+  `parcel compile -o` writes the compiled bytes. `BundledFunction`, `ColumnDef` and the schema
+  helpers move to `parcel_runtime::compiled`.
+
 ## [0.0.3]: embedding columns
 
 - Embedding columns: a contract can expose `fixed_size_list<float32, N>` with a positive

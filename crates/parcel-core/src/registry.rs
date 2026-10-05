@@ -152,7 +152,7 @@ pub fn parse_signature(s: &str) -> Result<Signature, String> {
 }
 
 /// A reference from a compiled artifact to the exact registry entry it used.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, serde::Deserialize)]
 pub struct FunctionPin {
     pub name: String,
     pub version: u32,

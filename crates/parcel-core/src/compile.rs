@@ -9,7 +9,7 @@ use datafusion_expr::{
     Expr, LogicalPlan, LogicalPlanBuilder, Operator, binary_expr, cast, lit, when,
 };
 use datafusion_functions_aggregate::expr_fn as agg;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::cel_print::{Style, print};
@@ -29,14 +29,14 @@ pub const BINDING_TABLE: &str = "__parcel_binding";
 pub const PARCEL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// A rule the reference interpreter evaluates once per query.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CelRule {
     pub id: String,
     /// Reference-style CEL (see [`crate::cel_print`]).
     pub cel: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GuaranteeRule {
     pub id: String,
     pub cel: String,
@@ -45,7 +45,7 @@ pub struct GuaranteeRule {
     pub reads: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShapeRule {
     pub id: String,
     pub shape: ShapeOp,
@@ -64,7 +64,7 @@ pub struct Flag {
 }
 
 /// A rule evaluated per row, in reference CEL: what the differential test compares against.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RowRule {
     pub id: String,
     pub kind: RowRuleKind,
@@ -74,7 +74,7 @@ pub struct RowRule {
     pub ty: Type,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RowRuleKind {
     Admit,
@@ -106,7 +106,7 @@ pub struct EnrichSpec {
 }
 
 /// How a rule will execute, shown to the author (design 9.1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
     /// Evaluated once per query; reads no data.
@@ -123,10 +123,10 @@ pub enum Tier {
     Operator,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReportEntry {
     pub rule: String,
-    pub op: &'static str,
+    pub op: String,
     pub tier: Tier,
     pub reason: String,
     /// The rule in canonical CEL, when it has an expression.
@@ -183,7 +183,7 @@ pub struct CompiledContract {
 }
 
 /// A statistic the validation plan computes: one `dataset` field.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StatSpec {
     pub field: DatasetField,
     /// Output column name in the verdict row.
@@ -208,7 +208,7 @@ pub struct ValidationPlan {
     pub query_time_guarantees: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Layout {
     /// Flag columns the view filters on, so fragments are homogeneous (design 10, stage 5).
     pub cluster_by: Vec<String>,
@@ -225,7 +225,7 @@ pub struct WritePlan {
     pub derived: Vec<Derived>,
     pub layout: Layout,
     /// Keys the manifest carries besides the statistics.
-    pub manifest_fields: Vec<&'static str>,
+    pub manifest_fields: Vec<String>,
 }
 
 /// The three artifacts, produced together and sharing a hash.
@@ -533,7 +533,7 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
         }
         report.push(ReportEntry {
             rule: id,
-            op,
+            op: op.into(),
             tier,
             reason,
             cel: canonical,
@@ -623,14 +623,16 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
         enrich: enrich.clone(),
         flags: flags.clone(),
         derived: derived.clone(),
-        manifest_fields: vec![
+        manifest_fields: [
             "contract_hash",
             "compilation_hash",
             "written_at",
             "row_count",
             "stats",
             "files",
-        ],
+        ]
+        .map(String::from)
+        .to_vec(),
     };
 
     let compilation_hash = compilation_hash(c, schema);

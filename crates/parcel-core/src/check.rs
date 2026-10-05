@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use datafusion_common::arrow::datatypes::{DataType, Schema};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::checker::{Env, OtherTypes, check_expr};
@@ -35,7 +35,7 @@ pub struct ExposedColumn {
     pub data_type: DataType,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "operator")]
 pub enum ShapeOp {
     Noise {
@@ -56,7 +56,7 @@ pub enum ShapeOp {
 }
 
 /// Where `noise` adds Laplace noise.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NoiseAt {
     /// To every aggregate over the column; the column cannot be read outside an aggregate.

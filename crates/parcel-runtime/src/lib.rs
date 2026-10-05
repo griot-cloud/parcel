@@ -9,7 +9,7 @@
 //!
 //! - [`plan`]: binding caller parameters, the enrichment stage, and running a
 //!   validation plan over any table, so every engine runs artifacts the same way.
-//! - [`bundle`]: the portable compiled artifact, verified by recompiling.
+//! - [`compiled`]: the compiled contract as bytes, and back, never recompiled.
 //! - [`differential`]: interpreter against DataFusion, row by row (`parcel check`).
 //! - [`export`]: the validation plan as SQL or Substrait for other engines.
 //! - [`shape`]: `suppress` and aggregate `noise` as rewrites of a caller's plan.
@@ -17,7 +17,7 @@
 //! It contains no compiler and no engine: it stores nothing and plans no queries.
 //! peQL is the runtime that does.
 
-pub mod bundle;
+pub mod compiled;
 pub mod differential;
 pub mod export;
 pub mod plan;

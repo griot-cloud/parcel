@@ -37,7 +37,7 @@ The JSON result includes `report`, `verdict`, `query_time_guarantees`, `callers`
 
 | Option | Meaning |
 | --- | --- |
-| `-o FILE`, `--out FILE` | Write a compiled bundle. |
+| `-o FILE`, `--out FILE` | Write the compiled contract as bytes, which an engine loads without compiling. |
 | `--sql DIALECT` | Print the validation query as SQL. |
 | `--table NAME` | Table name used in an export; default `contract_data`. |
 | `--substrait FILE` | Write a Substrait validation plan when supported by the build. |

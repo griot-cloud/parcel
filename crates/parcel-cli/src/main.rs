@@ -18,7 +18,7 @@ use parcel_core::compile::{ReportEntry, Tier};
 use parcel_core::registry::FunctionManifest;
 use parcel_core::{Compilation, ContractDoc, Registry};
 use parcel_runtime::Caller;
-use parcel_runtime::bundle::{Bundle, BundledFunction};
+use parcel_runtime::compiled::CompiledBytes;
 use parcel_runtime::differential::differential;
 use parcel_runtime::plan::{refusal, selectivity, validate};
 use serde_json::json;
@@ -42,7 +42,8 @@ enum Command {
         /// A Parquet or CSV file whose schema the contract binds.
         #[arg(long)]
         schema: PathBuf,
-        /// Write the compiled bundle (JSON) here: what an engine loads.
+        /// Write the compiled contract (`Compilation::to_bytes`) here: what an
+        /// engine loads as given.
         #[arg(long, short)]
         out: Option<PathBuf>,
         /// Print the compiled artifacts as JSON instead of the report.
@@ -108,11 +109,9 @@ struct Functions {
 }
 
 impl Functions {
-    /// Load each function for `owner`; the registry a contract of that owner compiles against,
-    /// and the functions to carry in a bundle.
-    fn load(&self, owner: Option<&str>) -> Result<(Registry, Vec<BundledFunction>), String> {
+    /// Load each function for `owner`: the registry a contract of that owner compiles against.
+    fn load(&self, owner: Option<&str>) -> Result<Registry, String> {
         let mut registry = Registry::builtin();
-        let mut bundled = Vec::new();
         for f in &self.functions {
             let (module, manifest) = f
                 .split_once('=')
@@ -121,13 +120,8 @@ impl Functions {
             let (bytes, m) = read_function(Path::new(module), Path::new(manifest))?;
             let entry = parcel_runtime::wasm::install(&bytes, &m, owner)?;
             registry.insert(entry);
-            bundled.push(BundledFunction {
-                owner: owner.to_owned(),
-                manifest: m,
-                module: hex_encode(&bytes),
-            });
         }
-        Ok((registry.visible_to(owner), bundled))
+        Ok(registry.visible_to(owner))
     }
 }
 
@@ -137,10 +131,6 @@ fn read_function(module: &Path, manifest: &Path) -> Result<(Vec<u8>, FunctionMan
         std::fs::read_to_string(manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
     let m = yaml_serde::from_str(&text).map_err(|e| format!("{}: {e}", manifest.display()))?;
     Ok((bytes, m))
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Column types for CSV input, overriding inference: `--type msisdn=utf8`.
@@ -237,10 +227,10 @@ async fn run(cmd: Command) -> R {
             substrait,
         } => {
             let (schema, _) = read_data(&schema, &types).await?;
-            let Some(loaded) = load_and_compile(&contract, &schema, &functions)? else {
+            let Some(compiled) = load_and_compile(&contract, &schema, &functions)? else {
                 return Ok(ExitCode::from(1));
             };
-            let c = &loaded.compilation;
+            let c = &compiled;
             #[cfg(feature = "substrait")]
             if let Some(path) = &substrait {
                 let (bytes, warnings) = parcel_runtime::export::validation_substrait(c, &table)?;
@@ -271,15 +261,7 @@ async fn run(cmd: Command) -> R {
                 );
             }
             if let Some(out) = out {
-                let bundle = Bundle::with_functions(
-                    &loaded.doc,
-                    &loaded.ancestors,
-                    &schema,
-                    c,
-                    loaded.functions,
-                )
-                .map_err(|e| e.to_string())?;
-                std::fs::write(&out, bundle.to_json().map_err(|e| e.to_string())?)
+                std::fs::write(&out, c.to_bytes().map_err(|e| e.to_string())?)
                     .map_err(|e| e.to_string())?;
                 eprintln!("wrote {}", out.display());
             }
@@ -352,14 +334,6 @@ async fn run(cmd: Command) -> R {
     }
 }
 
-/// A compiled contract with what produced it.
-struct Loaded {
-    doc: ContractDoc,
-    ancestors: Vec<ContractDoc>,
-    functions: Vec<BundledFunction>,
-    compilation: Compilation,
-}
-
 /// Parse, load the owner's functions, and compile against `schema`. Parents named by
 /// `inherits` are found among the documents next to the contract. `None` after printing
 /// diagnostics.
@@ -367,12 +341,12 @@ fn load_and_compile(
     contract: &Path,
     schema: &Schema,
     functions: &Functions,
-) -> Result<Option<Loaded>, String> {
+) -> Result<Option<Compilation>, String> {
     let source =
         std::fs::read_to_string(contract).map_err(|e| format!("{}: {e}", contract.display()))?;
     let doc = ContractDoc::parse(&source).map_err(|d| d.to_string())?;
     let docs = sibling_documents(contract);
-    let (registry, bundled) = functions.load(doc.owner.as_deref())?;
+    let registry = functions.load(doc.owner.as_deref())?;
     let compilation =
         match parcel_core::compile_with(&doc, schema, &registry, &|n| docs.get(n).cloned()) {
             Ok(c) => c,
@@ -383,18 +357,7 @@ fn load_and_compile(
                 return Ok(None);
             }
         };
-    let mut ancestors = Vec::new();
-    let mut next = doc.inherits.clone();
-    while let Some(p) = next.and_then(|n| docs.get(&n).cloned()) {
-        next = p.inherits.clone();
-        ancestors.push(p);
-    }
-    Ok(Some(Loaded {
-        doc,
-        ancestors,
-        functions: bundled,
-        compilation,
-    }))
+    Ok(Some(compilation))
 }
 
 /// Every contract document next to `contract`, by name: where parents are found.
@@ -484,10 +447,10 @@ async fn cmd_check(
     types: &TypeHints,
 ) -> R {
     let (schema, batches) = read_data(data, types).await?;
-    let Some(loaded) = load_and_compile(contract, &schema, functions)? else {
+    let Some(compiled) = load_and_compile(contract, &schema, functions)? else {
         return Ok(ExitCode::from(1));
     };
-    let c = &loaded.compilation;
+    let c = &compiled;
     let cc = &c.contract;
     let table = Arc::new(
         MemTable::try_new(schema.clone(), vec![batches.clone()]).map_err(|e| e.to_string())?,

@@ -1,9 +1,11 @@
 use cel::Value;
 use datafusion::arrow::array::{Array, FixedSizeListArray, Float32Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
+use parcel_core::compile::Compilation;
 use parcel_core::types::Type;
 use parcel_core::{ContractDoc, Registry, compile};
-use parcel_runtime::{Caller, bundle::Bundle, differential::differential, reference};
+use parcel_runtime::compiled::CompiledBytes;
+use parcel_runtime::{Caller, differential::differential, reference};
 use std::sync::Arc;
 
 fn schema() -> Schema {
@@ -37,26 +39,18 @@ fn cel_scalar_round_trip_keeps_float32_and_refuses_wrong_dimension_or_elements()
 }
 
 #[test]
-fn bundle_verification_preserves_embedding_schema_and_hashes() {
+fn compiled_bytes_preserve_embedding_schema_and_hashes() {
     let doc = document();
     let compilation = compile(&doc, &schema(), &Registry::builtin()).unwrap();
-    let bundle = Bundle::new(&doc, &[], &schema(), &compilation).unwrap();
-    let mut bundle = Bundle::from_json(&bundle.to_json().unwrap()).unwrap();
-    assert_eq!(bundle.parcel_version, "0.0.3");
-    assert_eq!(bundle.schema().unwrap(), schema());
+    let back = Compilation::from_bytes(&compilation.to_bytes().unwrap()).unwrap();
     assert_eq!(
-        bundle
-            .verify()
-            .unwrap()
-            .contract
-            .exposed_schema
-            .field(0)
-            .data_type()
-            .clone(),
+        back.contract.exposed_schema.field(0).data_type().clone(),
         Type::Embedding(3).to_arrow()
     );
-    bundle.document.expose.as_mut().unwrap()[0].type_name = "fixed_size_list<float32, 4>".into();
-    assert!(bundle.verify().is_err());
+    assert_eq!(
+        back.contract.compilation_hash,
+        compilation.contract.compilation_hash
+    );
 }
 
 #[tokio::test]
@@ -98,9 +92,9 @@ fn identity_module() -> Vec<u8> {
 
 #[cfg(feature = "wasm")]
 #[tokio::test]
-async fn wasm_embedding_is_checked_and_runs_on_both_engines_and_in_bundles() {
+async fn wasm_embedding_is_checked_and_runs_on_both_engines_and_from_compiled_bytes() {
     use parcel_core::registry::{Cost, FunctionManifest};
-    use parcel_runtime::{bundle::BundledFunction, wasm::install};
+    use parcel_runtime::wasm::install;
     let module = identity_module();
     let manifest = FunctionManifest {
         name: "embed_identity".into(),
@@ -126,16 +120,11 @@ async fn wasm_embedding_is_checked_and_runs_on_both_engines_and_in_bundles() {
         .await
         .unwrap();
     assert!(report.passed(), "{report:?}");
-    let mut bundle = Bundle::new(&doc, &[], &schema(), &c).unwrap();
-    bundle.functions.push(BundledFunction {
-        owner: "demo".into(),
-        manifest: manifest.clone(),
-        module: hex::encode(&module),
-    });
-    Bundle::from_json(&bundle.to_json().unwrap())
-        .unwrap()
-        .verify()
+    let back = Compilation::from_bytes(&c.to_bytes().unwrap()).unwrap();
+    let report = differential(&back, &batch, &[Caller::new("alice", "demo", "test")])
+        .await
         .unwrap();
+    assert!(report.passed(), "{report:?}");
     let mut wrong = manifest;
     wrong.signatures[0] = "(fixed_size_list<float32, 3>) -> fixed_size_list<float32, 4>".into();
     assert!(

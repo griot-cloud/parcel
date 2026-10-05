@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::registry::FunctionPin;
 use crate::types::Type;
@@ -125,7 +125,7 @@ impl CtxField {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ColumnStat {
     NullCount,
@@ -149,7 +149,7 @@ impl ColumnStat {
 }
 
 /// A value from the `dataset` namespace: one number in the manifest.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DatasetField {
     RowCount,
