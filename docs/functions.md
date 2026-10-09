@@ -1,6 +1,6 @@
 # Custom functions
 
-Use a WebAssembly function when a rule needs a domain-specific check that the built-ins do not provide. For example, a utility might require a meter serial to be `MK` followed by ten digits.
+Custom functions add calculations or checks to rule expressions. Parcel loads them as WebAssembly modules. This example checks for a meter serial beginning with `MK` followed by ten digits, such as `MK1234567890`.
 
 ## Write and build the function
 
@@ -21,7 +21,7 @@ rustup target add wasm32-unknown-unknown
 cargo build --release --target wasm32-unknown-unknown --manifest-path examples/udf-meter-serial/Cargo.toml
 ```
 
-The module is written under that example's `target/wasm32-unknown-unknown/release/` directory. A manifest declares the function signature and execution properties:
+The compiled module is written under the example's `target/wasm32-unknown-unknown/release/` directory. A YAML manifest describes its name, inputs, output, and execution properties:
 
 ```yaml
 name: is_meter_serial
@@ -47,10 +47,10 @@ parcel check contracts/tokens.yaml --data incoming/tokens.csv \
 
 This example module also exports `units` and `county`, which the contract uses for derived fields; each function has its own manifest.
 
-A contract with `owner: kplc` can call `is_meter_serial(row.meter)` after the function is loaded for that owner. Pass the same `--function` option when compiling a bundle; the bundle carries the module needed by the receiver.
+A contract with `owner: kplc` can call `is_meter_serial(row.meter)` after the function is loaded for that owner. Pass the same `--function` options when compiling the contract. The application loading it needs the matching function implementations.
 
 ## Execution limits
 
-The runtime rejects modules with imports and runs accepted functions under fuel and memory limits. Loading checks the module's interface and evaluates a smoke batch. Function pins identify the implementation by hash, so changing a module requires recompilation of contracts that use the new implementation.
+Parcel rejects modules that import external functions and limits their instruction count and memory use. Loading checks the function's inputs and output and runs a test batch. Compiled contracts record a hash of the function implementation; a changed implementation requires recompilation.
 
-The CEL interpreter and DataFusion use the same module. `parcel check` compares their rule results on the supplied sample.
+`parcel check` also checks that custom functions produce consistent results when used in rules.

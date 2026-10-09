@@ -1,63 +1,94 @@
 # Writing contracts
 
-Start with a small dataset and the access you want each caller to have. The {doc}`quickstart` provides a working example; the {doc}`language` reference lists the available fields and expressions.
+A parcel contract is a YAML or JSON file that describes a dataset and the rules for using it. For example, Acme owns the following orders dataset:
 
-## Choose the rule for the requirement
+| order_id | supplier_id | amount |
+| --- | --- | --- |
+| 1 | globex | 120 |
+| 2 | initech | 80 |
+| 3 | globex | -5 |
+| 4 | globex | 60 |
 
-| Requirement | Use |
-| --- | --- |
-| Only approved purposes may query. | `decide` with `ctx.purpose`. |
-| Suppliers may read only their orders. | `admit` comparing a row field with the caller. |
-| Every amount must be positive. | `assert` with an explicit failure action. |
-| External callers should receive masked email addresses. | `transform` on an exposed column. |
-| The dataset must contain records or meet a freshness requirement. | `guarantee` over dataset statistics. |
-| Small groups should be suppressed, or results sampled or noised. | `shape` with the appropriate operator. |
+We want to create a contract that declares data quality rules and access policies for these orders. Each supplier should have access only to its own orders, and orders with zero or negative amounts should be excluded. The owner wants to make only `order_id` and `amount` available.
 
-Use `expose` to list the columns callers may query. A rule can still use other source columns to decide access.
+The contract has four sections: contract identity, binding, expose, and rules.
 
-## Make failure behaviour explicit
+## Contract identity
 
-For a row assertion, `drop` removes failing rows from query results, `deny` makes the dataset verdict invalid, and `report` counts failures without excluding rows. These choices do not delete source records.
-
-For a dataset guarantee, `deny` blocks use when the requirement fails; `annotate` records the failure. Guarantees involving stored write time or the query's current time must be evaluated by the serving engine.
-
-## Test with representative callers
-
-From the supplier example directory:
-
-```bash
-parcel check orders.yaml --data orders.csv --caller acme.yaml --caller globex.yaml --json
-```
-
-Include callers who should receive different results. Test missing values and failing records as well as valid data. Read the verdict and caller results separately: an intended caller refusal is not itself a failing `parcel check` exit status.
-
-`check` validates the supplied dataset and compares rule evaluators on up to 1,000 rows by default. `--sample N` changes the latter limit; it does not limit the dataset used for the validation verdict.
-
-For CSV identifiers that look numeric, preserve their intended type with an override, such as `--type supplier_id=utf8`. Compile against a schema representative of the data the engine will actually serve.
-
-## Reuse a parent contract
-
-A child contract can inherit a parent and add restrictions. For example, save this next to `orders.yaml`:
+`contract` is the name of the contract, `version` is its version number, and `owner` is the owner of the data. For more details, see {doc}`Contract identity <contract-identity>`.
 
 ```yaml
-contract: purchasing/large_orders
+contract: purchasing/orders
 version: 1
 owner: acme
-inherits: purchasing/orders
-rules:
-  - id: large_orders
-    op: admit
-    expr: row.amount >= 100
 ```
 
-It retains both supplier access and positive-amount checks, then limits results to amounts of at least 100. The CLI finds parent contracts by name among YAML and JSON files in the same directory. A child cannot remove a parent rule, expose a hidden column or bind different data: it omits `binding` or repeats its parent's exactly, in the same form (`parquet` or `iceberg`).
+## Binding
 
-## Other ways to author and use contracts
+`binding` specifies where the data is stored. For this example, the orders above are stored as Parquet files in `data/orders/`. For more details, see {doc}`Binding <contract-binding>`.
+
+```yaml
+binding:
+  parquet: data/orders/
+```
+
+## Expose
+
+`expose` lists the columns the owner chooses to make available, along with their data types. Of the three columns in the dataset above, the owner exposes `order_id` and `amount`. The rules can still use `supplier_id` to match each order to a supplier. For more details, see {doc}`Expose <contract-expose>`.
+
+```yaml
+expose:
+  - {name: order_id, type: int64}
+  - {name: amount, type: int64}
+```
+
+## Rules
+
+`rules` lets the owner define data quality rules and access policies for the dataset. When sharing these orders with suppliers' analysts, we want to:
+
+1. Allow each supplier to see only its own orders.
+2. Return only orders with positive amounts.
+
+The `supplier_orders` rule compares each order's `supplier_id` with the analyst's organization, supplied as `ctx.tenant`. The `positive_amount` rule excludes orders with zero or negative amounts. For more details, see {doc}`Rules <contract-rules>`.
+
+```yaml
+rules:
+  - id: supplier_orders
+    op: admit
+    expr: "row.supplier_id == ctx.tenant"
+  - id: positive_amount
+    op: assert
+    expr: "row.amount > 0"
+    on_fail: drop
+```
+
+## Complete contract
+
+```yaml
+contract: purchasing/orders
+version: 1
+owner: acme
+binding:
+  parquet: data/orders/
+expose:
+  - {name: order_id, type: int64}
+  - {name: amount, type: int64}
+rules:
+  - id: supplier_orders
+    op: admit
+    expr: "row.supplier_id == ctx.tenant"
+  - id: positive_amount
+    op: assert
+    expr: "row.amount > 0"
+    on_fail: drop
+```
 
 ```{toctree}
+:hidden:
 :maxdepth: 1
 
-odcs
-functions
-exports
+contract-identity
+contract-binding
+contract-expose
+contract-rules
 ```

@@ -31,7 +31,7 @@ cd parcel/examples/suppliers
 
 Run the commands below from this directory.
 
-## Meet the data and contract
+## Data and contract
 
 `orders.csv` contains orders assigned to two suppliers. Order 3 has an invalid amount:
 
@@ -45,7 +45,7 @@ Run the commands below from this directory.
 :language: yaml
 ```
 
-The `binding` is the Parquet location a query engine will use later. For this check, `--data orders.csv` supplies the sample instead; no Parquet files are needed or written.
+The `binding` declares a Parquet location for the orders. For this check, `--data orders.csv` supplies the sample; no Parquet files are needed or written.
 
 ## Define two callers
 
@@ -61,7 +61,7 @@ The `binding` is the Parquet location a query engine will use later. For this ch
 :language: yaml
 ```
 
-These files supply test identities. An application must supply authenticated caller attributes when enforcing the contract.
+These profiles mock `ctx` for the check: `id` identifies the caller, `tenant` identifies their organization, and `purpose` states why they need access.
 
 ## Check the contract
 
@@ -73,10 +73,9 @@ The report shows:
 
 - **One failed quality check:** order 3 fails `positive_amount`.
 - **A valid dataset verdict:** `on_fail: drop` excludes the bad row from results without invalidating the whole dataset.
-- **Different row counts:** Acme can read 3 of 4 rows; Globex can read 2 of 4. The underlying CSV stays unchanged.
-- **Agreement between evaluators:** the CEL interpreter and DataFusion produce the same rule results for this sample and these callers.
+- **Different row counts:** 3 of 4 rows pass for Acme; 2 of 4 pass for Globex. The CSV stays unchanged.
 
-The caller counts include row access rules and drop-level assertions. They are a check of those filters, not the result of an arbitrary SQL query.
+The row counts include both the supplier access rule and the positive-amount check.
 
 To require every amount to pass, change `on_fail: drop` to `on_fail: deny` and rerun the check. The verdict becomes invalid and the command exits unsuccessfully. Restore `drop` before continuing.
 
@@ -86,6 +85,6 @@ To require every amount to pass, change `on_fail: drop` to `on_fail: deny` and r
 parcel compile orders.yaml --schema orders.csv -o orders.parcel
 ```
 
-The schema tells parcel which columns and types the expressions must work with. Compilation checks the rules but does not validate the data values. The output file is the compiled contract as bytes: its expressions and plans, ready to run.
+`--schema orders.csv` supplies the column names and types. Compilation checks the rules against them and writes `orders.parcel`. Checking the data values is the job of `parcel check`.
 
-Load it into a compatible engine such as [peQL](https://griot-cloud.github.io/peQL/quickstart.html), which manages data and applies the rules to queries. To keep writing contracts, continue to {doc}`authoring`.
+For the contract fields and more examples, see {doc}`authoring`. Command options and output are covered in {doc}`checking` and {doc}`compiling`.

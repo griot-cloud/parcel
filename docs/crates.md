@@ -1,6 +1,6 @@
 # Rust API reference
 
-parcel exposes Rust crates and a command-line tool. It does not ship a Python package. The pages below cover the public entry points used to compile contracts and execute their artifacts. See [Command line](cli.md) for the executable.
+The Rust API provides contract parsing, compilation, evaluation, and export. Structs expose data through fields; constructors and methods are listed with their types. Free functions are documented under the module that contains them.
 
 | Reference | What it covers |
 | --- | --- |
@@ -9,7 +9,7 @@ parcel exposes Rust crates and a command-line tool. It does not ship a Python pa
 | [Artifacts and exports](rust-artifacts.md) | Compiled bytes, function pins, SQL and Substrait export, WebAssembly loading. |
 | [WebAssembly functions](functions.md) | Writing and verifying a custom function with `parcel-udf`. |
 
-`parcel-core` parses and compiles without I/O. `parcel-runtime` provides operations an embedding engine calls; it does not authenticate users, store datasets or automatically enforce a contract on every query. [peQL](https://griot-cloud.github.io/peQL/rust.html) connects those operations to a query engine.
+`parcel-core` parses and compiles contracts. `parcel-runtime` evaluates the compiled results and provides export and loading functions.
 
 ```{toctree}
 :hidden:

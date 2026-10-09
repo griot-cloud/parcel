@@ -11,8 +11,8 @@ parcel defines and compiles data contracts. [peQL](https://griot-cloud.github.io
 | Write data, maintain statistics and validation results. | peQL. |
 | Apply contract rules to SQL queries and manage audit records and budgets. | peQL. |
 
-peQL calls parcel's Rust libraries directly. You can register a contract document in peQL without installing the parcel CLI first.
+peQL calls parcel's Rust libraries directly. Registering a contract document in peQL does not require the parcel CLI.
 
-Use the parcel CLI when authoring and testing contracts separately from the engine. `parcel compile -o contract.parcel` writes the compiled contract as bytes, which a compatible peQL version registers as given (`Engine::register_compiled`) without compiling it.
+The parcel CLI supports authoring and testing contracts separately from the engine. `parcel compile -o contract.parcel` writes the compiled contract as bytes, which a compatible peQL version registers as given (`Engine::register_compiled`) without compiling it.
 
-For a complete data-and-query workflow, start with [peQL's quickstart](https://griot-cloud.github.io/peQL/quickstart.html). For contract syntax and rule expressions, stay in the {doc}`language` reference.
+[peQL's quickstart](https://griot-cloud.github.io/peQL/quickstart.html) covers the data-and-query workflow. The {doc}`language` reference specifies contract syntax and rule expressions.

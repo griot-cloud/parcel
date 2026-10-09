@@ -2,27 +2,12 @@
 
 The crate re-exports `ContractDoc`, `Registry`, `check_contract`, `compile`, `compile_with`, `Compilation` and `Diagnostic` at its root. The snippets use DataFusion's Arrow `Schema`.
 
-## `ContractDoc::parse`
-
-```rust
-ContractDoc::parse(source: &str) -> Result<ContractDoc, Diagnostic>
-```
-
-Parses YAML or JSON contract text. `source` is the document content, not a path. Document syntax and shape errors return a `Diagnostic` with `code`, optional `rule`, and `message`. Parsing does not check expressions against a dataset schema.
-
-`ContractDoc` has public fields: `contract: String`, `version: u32`, optional `owner`, `inherits`, `binding`, `residency`, `expose`, `extensions`, `enrich`, `dataset_other`, and `rules: Vec<Rule>`. See [Contract language](language.md) for their document forms.
-
-## `Registry`
-
-```rust
-Registry::builtin() -> Registry
-registry.insert(entry: FunctionEntry)
-registry.get(name: &str) -> Option<&FunctionEntry>
-registry.visible_to(owner: Option<&str>) -> Registry
-registry.entries() -> impl Iterator<Item = &FunctionEntry>
-```
-
-`builtin` provides parcel's standard functions. `insert` replaces an entry with the same name. `get` looks up one entry. `visible_to` returns built-ins plus functions owned by the given tenant. `entries` iterates current entries. Pass this registry to checking and compilation so function calls can be resolved. `FunctionEntry` includes name, version, overload signatures, determinism, cost, owner, hash and optional module hash.
+| Type reference | Contents |
+| --- | --- |
+| [Contract documents](rust-document.md) | `ContractDoc`, rule types, bindings, and parsing. |
+| [Function registry](rust-registry.md) | `Registry`, entries, manifests, signatures, and pins. |
+| [Compilation results](rust-compilation.md) | `Compilation`, `CompiledContract`, validation and write plans. |
+| [Diagnostics](rust-diagnostics.md) | Error codes, fields, and constructors. |
 
 ## `check_contract`
 
@@ -32,7 +17,7 @@ check_contract(
 ) -> Result<CheckedContract, Vec<Diagnostic>>
 ```
 
-Checks rule expressions, column names/types and allowed namespaces against the source Arrow schema and function registry. Returns a typed `CheckedContract` or all collected diagnostics. It does not create executable plans.
+Checks rule expressions, column names/types and allowed namespaces against the source Arrow schema and function registry. Returns a typed [CheckedContract](rust-checked.md) or all collected diagnostics. It does not create executable plans.
 
 ## `compile`
 
@@ -57,20 +42,45 @@ compile_with(
 
 Resolves parent contracts by name through `lookup`, then checks and compiles the flattened chain. Return `None` from the callback when a parent is absent; inheritance diagnostics describe the failure. The child may narrow, but cannot widen, its parent.
 
-## `Compilation` and diagnostics
+## Parameters and errors
 
-| Field | Type | Meaning |
+| Parameter | Used by | Meaning |
 | --- | --- | --- |
-| `contract` | `CompiledContract` | Query-time rules, schemas, caller parameters, function pins and contract hashes. |
-| `validation` | `ValidationPlan` | One-row validation plan, assertions and required statistics. |
-| `write` | `WritePlan` | Enrichment, flags, derived values and storage layout. |
+| `doc` | All three functions | Parsed contract to check or compile; borrowed without modification. |
+| `schema` | All three functions | Arrow schema of the underlying data. |
+| `registry` | All three functions | Function definitions available to this contract. |
+| `lookup` | `compile_with` | Callback receiving a parent name and returning its document, or `None` if absent. |
 
-`Diagnostic` exposes `code: Code`, `rule: Option<String>` and `message: String`. Match `code` in tooling; display the diagnostic for a human-readable explanation. `contract_hash(&ContractDoc) -> String` hashes the canonical document. For bytes that an engine can load without recompiling, see [Artifacts and exports](rust-artifacts.md).
+Failures return `Vec<Diagnostic>` so a caller can display all collected problems. Successful checking returns a `CheckedContract`; successful compilation returns the three artifacts in [Compilation](rust-compilation.md).
+
+## Example
+
+This helper parses and compiles document text against a supplied Arrow schema, returning readable errors:
 
 ```rust
-use parcel_core::{ContractDoc, Registry, compile};
+use datafusion::arrow::datatypes::Schema;
+use parcel_core::{Compilation, ContractDoc, Registry, compile};
 
-let doc = ContractDoc::parse(source)?;
-let artifacts = compile(&doc, &arrow_schema, &Registry::builtin())
-    .map_err(|diagnostics| format!("{diagnostics:?}"))?;
+fn compile_text(source: &str, schema: &Schema) -> Result<Compilation, String> {
+    let doc = ContractDoc::parse(source).map_err(|e| e.to_string())?;
+    compile(&doc, schema, &Registry::builtin()).map_err(|errors| {
+        errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")
+    })
+}
+```
+
+## Additional compiler functions
+
+`parcel_core::check::contract_hash(doc: &ContractDoc) -> String` returns the hash of the document's canonical form.
+
+`parcel_core::compile::compile_resolved(resolved: &Resolved, schema: &Schema, registry: &Registry) -> Result<Compilation, Vec<Diagnostic>>` compiles an already resolved inheritance chain. Most callers should use `compile_with` for this step.
+
+```{toctree}
+:hidden:
+
+rust-document
+rust-checked
+rust-registry
+rust-compilation
+rust-diagnostics
 ```

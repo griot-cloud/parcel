@@ -4,7 +4,7 @@
   "type": "object",
   "properties": {
     "contract": {
-      "description": "Contract name, e.g. `sales/orders`. This is what callers put in `FROM`.",
+      "description": "Contract name, e.g. `sales/orders`.",
       "type": "string"
     },
     "version": {
