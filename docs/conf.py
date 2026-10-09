@@ -1,11 +1,14 @@
 """Sphinx configuration for the parcel documentation site."""
 
 from datetime import date
+from pathlib import Path
+import tomllib
 
 project = "parcel"
 copyright = f"{date.today().year}, Griot Data Technologies"
 author = "Griot Data Technologies"
-release = "0.0.1"
+with (Path(__file__).resolve().parent.parent / "Cargo.toml").open("rb") as manifest:
+    release = tomllib.load(manifest)["workspace"]["package"]["version"]
 
 extensions = ["myst_parser", "sphinx_design"]
 source_suffix = {".md": "markdown"}
