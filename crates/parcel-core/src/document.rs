@@ -12,7 +12,7 @@ use crate::diag::{Code, Diagnostic};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContractDoc {
-    /// Contract name, e.g. `sales/orders`. This is what callers put in `FROM`.
+    /// Contract name, e.g. `sales/orders`.
     pub contract: String,
     pub version: u32,
     /// The tenant that owns the contract: its registered functions are callable here.

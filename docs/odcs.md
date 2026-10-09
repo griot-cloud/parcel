@@ -6,7 +6,7 @@ parcel can convert an Open Data Contract Standard (ODCS v3) document into a parc
 parcel import odcs contract.odcs.yaml -o contract.yaml
 ```
 
-If the document has multiple schema objects, choose one with `--object NAME`. Without `-o`, the result is printed to standard output.
+For documents with multiple schema objects, `--object NAME` selects one. Without `-o`, the result is printed to standard output.
 
 | ODCS field | parcel result |
 | --- | --- |
@@ -15,10 +15,10 @@ If the document has multiple schema objects, choose one with `--object NAME`. Wi
 | `unique` | A distinct-count guarantee with `on_fail: annotate`. |
 | Quality rules with `engine: parcel` | parcel rule definitions. |
 
-The importer prints notes for content it cannot preserve, including `servers`. The generated binding is a Parquet placeholder, `{parquet: data/<object>/}`; replace it with the data's Parquet location or its Iceberg table (`{iceberg: namespace.table}`). Read the notes and review the binding, types and failure actions before use. Then check the result against representative data:
+The importer prints notes for content it cannot preserve, including `servers`. The generated binding is a Parquet placeholder, `{parquet: data/<object>/}`. It must be replaced with the data's Parquet location or Iceberg table (`{iceberg: namespace.table}`). The binding, types, and failure actions require review before use. The imported contract can be checked against representative data:
 
 ```bash
 parcel check contract.yaml --data sample.csv
 ```
 
-Imported metadata alone does not verify the data or enforce access. Add the policies you need and use a serving engine to apply them.
+The import converts contract definitions. The `check` command evaluates those definitions against the sample data.

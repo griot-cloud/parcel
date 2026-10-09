@@ -1,63 +1,92 @@
 # Command line
 
-Use `parcel --help` or `parcel COMMAND --help` for the options available in your installed version.
+The parcel CLI checks data against contracts, compiles contracts, imports ODCS definitions, and verifies custom functions.
 
-## Commands
+```text
+parcel COMMAND [OPTIONS]
+```
 
-| Command | Purpose |
+## Check and compile
+
+| Command | Result | Guide and options |
+| --- | --- | --- |
+| `parcel check CONTRACT --data DATA` | Quality verdict, caller access results, and a comparison of rule evaluators. | [Checking contracts](checking.md) |
+| `parcel compile CONTRACT --schema SCHEMA` | Compilation report, with options to save the contract or export validation. | [Compiling contracts](compiling.md) |
+
+For example, from `examples/suppliers` in the repository:
+
+```bash
+parcel check orders.yaml --data orders.csv --caller globex.yaml
+parcel compile orders.yaml --schema orders.csv --out orders.parcel
+```
+
+The first command evaluates the orders for the Globex caller. The second writes `orders.parcel` for an application to load. Each guide describes its command's inputs, complete options, and output.
+
+## Generate the contract schema
+
+```bash
+parcel schema > contract.schema.json
+```
+
+This writes the JSON Schema for parcel contract documents. Editors and other tools can use it to check document structure. It describes the contract format, rather than the columns in a dataset.
+
+## Import an ODCS contract
+
+```bash
+parcel import odcs contract.odcs.yaml --out contract.yaml
+```
+
+This converts an ODCS v3 document to parcel YAML. Without `--out`, the YAML is printed to the terminal.
+
+| Argument or option | Meaning |
 | --- | --- |
-| `parcel check CONTRACT --data SAMPLE` | Compile, validate sample data, evaluate test callers and compare CEL with DataFusion. |
-| `parcel compile CONTRACT --schema SAMPLE` | Compile against the sample's schema and print the execution report. |
-| `parcel schema` | Print the contract document's JSON Schema. |
-| `parcel import odcs FILE` | Convert an ODCS v3 document. |
-| `parcel function verify MODULE --manifest FILE --owner TENANT` | Verify a WebAssembly function and print its pin hash. |
+| `FILE` | Required ODCS document path. |
+| `--object NAME` | Select a schema object when the document contains several. |
+| `-o FILE`, `--out FILE` | Save the converted contract to a file. |
 
-Samples can be CSV, Parquet files or directories of Parquet files. Compilation uses the schema; checking evaluates data values as well.
+For field mappings and an example of checking the imported result, see {doc}`odcs`.
 
-## Shared options for check and compile
+## Verify a custom function
 
-| Option | Meaning |
+```text
+parcel function verify MODULE --manifest MANIFEST --owner OWNER
+```
+
+This loads a WebAssembly module, verifies its interface, and runs a small test batch. On success it prints the function's pin hash, which identifies the verified implementation.
+
+| Argument or option | Meaning |
 | --- | --- |
-| `--type COLUMN=TYPE` | Override CSV type inference. Repeat for multiple columns. |
-| `--function MODULE=MANIFEST` | Load a WebAssembly function for the contract's owner. Repeatable. |
-| `--json` | Print the check result or compiled artifacts as JSON. |
+| `MODULE` | Required path to the `.wasm` file. |
+| `--manifest FILE` | Required YAML manifest defining the function and its signatures. |
+| `--owner OWNER` | Required owner identifier under which the function is loaded. |
 
-## Check options
+For a complete module, manifest, and contract example, see {doc}`functions`.
 
-| Option | Meaning |
+## Help and version
+
+```bash
+parcel --help
+parcel check --help
+parcel compile --help
+parcel --version
+```
+
+Every command accepts `-h` or `--help`. The installed binary's help lists the options available in that build, including optional features such as Substrait export.
+
+## Exit status
+
+| Status | Meaning |
 | --- | --- |
-| `--caller FILE` | YAML or JSON caller profile. Repeat for different callers. |
-| `--sample N` | Maximum rows in the differential comparison; default 1,000. Validation still uses all supplied data. |
+| `0` | Success. For `check`, the dataset is valid and the evaluators agree. |
+| `1` | Compilation diagnostics, an invalid dataset, or differing evaluator results. |
+| `2` | A command, input, parsing, or execution error. |
 
-Caller profiles require `id`, `tenant` and `purpose`. Optional fields are `tier`, `clearance`, `classification`, `roles`, `now` and `other`. Without a profile, the default caller has ID `check`, an empty tenant and purpose `analytics`.
+Compiler diagnostics identify the affected rule where possible:
 
-The JSON result includes `report`, `verdict`, `query_time_guarantees`, `callers` and `differential`. A caller refusal appears under `refused_by`; it does not by itself make the command fail.
-
-## Compile options
-
-| Option | Meaning |
+| Diagnostic | What to check |
 | --- | --- |
-| `-o FILE`, `--out FILE` | Write the compiled contract as bytes, which an engine loads without compiling. |
-| `--sql DIALECT` | Print the validation query as SQL. |
-| `--table NAME` | Table name used in an export; default `contract_data`. |
-| `--substrait FILE` | Write a Substrait validation plan when supported by the build. |
-
-For other engines, see {doc}`exports`. For ODCS selection and output options, see {doc}`odcs`.
-
-## Exit status and errors
-
-- **0:** the command completed; for `check`, the verdict is valid and the differential comparison passed.
-- **1:** compilation diagnostics, an invalid verdict or differential mismatches.
-- **2:** a command, input, parsing or runtime error.
-
-Compiler diagnostics identify the affected rule where possible. Common fixes:
-
-| Diagnostic | Check |
-| --- | --- |
-| `UnknownColumn` or `UnknownField` | Column spelling, schema and extension declarations. |
-| `TypeMismatch` or `ExposeTypeMismatch` | Source and output types; CSV inference may need `--type`. |
-| `Namespace` | Whether that operation may read `row`, `ctx` or `dataset`. |
-| `OutsideProfile` or `Untranslatable` | Whether the expression uses supported CEL forms. |
-| `Inheritance` | Parent location, rule IDs and whether the child widens access. |
-
-A successful compile does not mean that data passes validation. Run `check` against representative data before handing the contract to an engine.
+| `UnknownColumn` or `UnknownField` | Column spelling and custom field declarations. |
+| `TypeMismatch` or `ExposeTypeMismatch` | Input and output types; CSV inference may need `--type`. |
+| `Namespace` | Whether the rule can read the namespace used in its expression. |
+| `OutsideProfile` or `Untranslatable` | Whether the expression uses supported syntax. |
+| `Inheritance` | Parent location, rule IDs, and whether the child widens access. |

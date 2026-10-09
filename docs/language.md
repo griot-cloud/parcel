@@ -6,69 +6,17 @@ Contracts are YAML or JSON documents. Run `parcel schema` for the JSON Schema, o
 # yaml-language-server: $schema=https://raw.githubusercontent.com/griot-cloud/parcel/main/schema/contract.schema.json
 ```
 
-## Document fields
+## Contract fields
 
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `contract` | Yes | Contract name, such as `purchasing/orders`. |
-| `version` | Yes | Unsigned integer version. |
-| `owner` | No | Tenant whose registered functions the rules may use. |
-| `inherits` | No | Parent contract name. See {doc}`authoring`. |
-| `binding` | Unless inherited | `{parquet: path}` or `{iceberg: namespace.table}`, with optional `partitioned_by: [columns]`. See [Bindings](#bindings). |
-| `expose` | Unless inherited | List of `{name, type}` columns available to queries. |
-| `rules` | No | List of the operations below. |
-| `extensions` | No | Typed custom fields under `row`, `ctx` and `dataset`. |
-| `enrich` | No | List of `{field, expr}` producers for `row.other` fields. |
-| `dataset_other` | No | List of `{field, value}` or `{field, expr}` producers for `dataset.other`. |
+The field definitions and examples are in [Contract identity](contract-identity.md), [Binding](contract-binding.md), [Expose](contract-expose.md), and [Rules](contract-rules.md).
 
-`expose` is a document field, not an `op` in the rules list. A transformed column may have a different type from its source when `expose` declares the output type.
+The remaining sections specify expression syntax, supported types, and additional contract fields.
 
-## Bindings
+## Rule constraints
 
-A binding names where the data is, in exactly one of two forms:
+Rule IDs must be unique and match `[a-z][a-z0-9_]*`. Conditions for `decide`, `admit`, `assert`, and `guarantee` must return a Boolean. A `transform` must return the type declared for its column in `expose`.
 
-| Form | Value | Example |
-| --- | --- | --- |
-| `parquet` | A Parquet file, directory or URL. | `{parquet: data/orders/}` |
-| `iceberg` | An Iceberg table: one or more namespace parts and a table name, joined with `.`. | `{iceberg: sales.orders}` |
-
-Each part of an Iceberg identifier starts with a letter or underscore, followed by letters, digits or underscores; `lake.sales.orders` names the table `orders` in the namespace `lake.sales`. A binding that names both forms, or neither, is refused, as is an identifier without a namespace (`orders`), with an empty part (`a..b`) or with other characters (`a.b c`).
-
-Either form may add `partitioned_by`, a list of columns of the bound schema:
-
-```yaml
-binding: {iceberg: sales.orders, partitioned_by: [region]}
-```
-
-A child contract may omit its binding to take its parent's whole binding, or repeat it exactly; it cannot name another location or table, the other form, or different partitioning.
-
-## Rule operations
-
-Each rule requires a unique `id` matching `[a-z][a-z0-9_]*` (a lowercase letter followed by lowercase letters, digits or underscores), and an `op`.
-
-| `op` | Allowed inputs | Required fields | Meaning |
-| --- | --- | --- | --- |
-| `decide` | `ctx` | `expr` | Refuse the caller when false. |
-| `admit` | `row`, `ctx` | `expr` | Include rows for which the condition is true. |
-| `assert` | `row` | `expr`, `on_fail` | Check row quality; fail with `drop`, `deny` or `report`. |
-| `transform` | `row`, `ctx` | `column`, `expr` | Replace an exposed column's value. |
-| `guarantee` | `dataset`, `ctx.now` | `expr`, `on_fail` | Check a dataset requirement; fail with `deny` or `annotate`. |
-| `shape` | `ctx` in `unless` | `operator`, `params` | Sample rows, suppress small groups or add noise. |
-
-Boolean operations require a true-or-false expression. A transform's result must match the exposed column's type.
-
-These independent examples assume the referenced fields exist in the schema:
-
-```yaml
-rules:
-  - {id: purchasing_only, op: decide, expr: "ctx.purpose == 'purchasing'"}
-  - {id: own_orders, op: admit, expr: "row.supplier_id == ctx.tenant"}
-  - {id: positive_amount, op: assert, expr: "row.amount > 0", on_fail: drop}
-  - {id: mask_email, op: transform, column: email, expr: "redact(row.email)"}
-  - {id: nonempty, op: guarantee, expr: "dataset.row_count > 0", on_fail: deny}
-```
-
-### Shapes
+## Shapes
 
 | Operator | Parameters | Applies to |
 | --- | --- | --- |
@@ -76,15 +24,7 @@ rules:
 | `sample` | `fraction` greater than 0 and at most 1; exposed `key` column. | A stable sample chosen from the key. |
 | `noise` | Positive `sensitivity` and `epsilon`; a named `budget`; optional `at`. | Numeric exposed `column`; `at: aggregate` by default, or `at: row`. |
 
-```yaml
-- id: small_groups
-  op: shape
-  operator: suppress
-  params: {k: 5}
-  unless: "ctx.tenant == 'acme'"
-```
-
-`unless` skips the shape when its caller-only condition is true. Aggregate noise restricts how the protected column can be queried. The serving engine must apply the shape and account for budget charges; exporting a validation plan does not export these query policies.
+`unless` is an optional Boolean condition using `ctx`; when true, it skips the shape.
 
 ## Namespaces
 
@@ -94,16 +34,7 @@ rules:
 | `row` | Source columns and declared `other.<field>` values. |
 | `dataset` | `row_count`, `written_at`, `contract_hash`; column statistics; `assertions.<id>.pass_rate`; declared `other.<field>`. |
 
-Column statistics are `<column>.null_count`, `null_rate`, `distinct_count`, `min` and `max`. `ctx.now` is fixed for a query. Declare custom field types in `extensions`; use `enrich` for derived row fields and `dataset_other` for constants or dataset aggregates. The application supplies `ctx.other` values.
-
-```yaml
-extensions:
-  row: {amount_major: double}
-enrich:
-  - {field: amount_major, expr: "double(row.amount) / 100.0"}
-```
-
-Rules can then read `row.other.amount_major`.
+Column statistics are `<column>.null_count`, `null_rate`, `distinct_count`, `min` and `max`. The application supplies `ctx.now` as the time used to evaluate rules. The application supplies `ctx.other` values.
 
 ## Expressions
 
@@ -131,7 +62,7 @@ Exact decimals support up to 18 digits, no division, and one scale per compariso
 | `is_msisdn(value)` | Checks the supported Kenyan mobile-number format. |
 | `is_email(value)` | Checks email format. |
 
-Contracts may also call their owner's registered {doc}`functions`.
+Rules may also call {doc}`functions` loaded for the contract's owner.
 
 ## Nulls
 
@@ -146,3 +77,39 @@ ctx.clearance > 2 ? row.salary : null
 `expose` and extension declarations accept `bool`, `int8` through `int64`, `uint8` through `uint64`, `float32`, `float64` (or `double`), `utf8` (or `string`), `large_utf8`, `binary` (or `bytes`), `timestamp`, `duration`, `decimal(p,s)` and `list<type>`.
 
 `timestamp` defaults to microseconds in UTC; explicit units use `timestamp[s]`, `[ms]`, `[us]` or `[ns]`. Duration units use the same bracket notation.
+
+## Additional fields
+
+| Field | Value |
+| --- | --- |
+| `extensions` | Typed custom fields grouped under `row`, `ctx`, and `dataset`. |
+| `enrich` | List of `{field, expr}` calculations for declared `row.other` fields. |
+| `dataset_other` | List of `{field, value}` constants or `{field, expr}` calculations for declared `dataset.other` fields. |
+
+For example, this declares a calculated amount in major currency units:
+
+```yaml
+extensions:
+  row: {amount_major: double}
+enrich:
+  - {field: amount_major, expr: "double(row.amount) / 100.0"}
+```
+
+Rules can read the result as `row.other.amount_major`.
+
+## Inheritance
+
+A child contract names its parent with `inherits`. The CLI resolves parent contracts by name from YAML and JSON files in the same directory. A child can omit `binding` and `expose` to inherit them:
+
+```yaml
+contract: purchasing/large_orders
+version: 1
+owner: acme
+inherits: purchasing/orders
+rules:
+  - id: large_orders
+    op: admit
+    expr: "row.amount >= 100"
+```
+
+The child's rules accumulate with the parent's rules. Here both the parent's supplier filter and the new amount filter apply. A child may narrow `expose` to a subset of parent columns with the same types; it cannot expose a hidden parent column. A repeated `binding` must match the parent's binding exactly, including its source form and partition columns. A child cannot remove or redefine a parent rule. Parent and child transforms compose in order, with the parent applied first.
