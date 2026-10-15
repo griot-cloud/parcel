@@ -38,6 +38,7 @@ pub mod odcs;
 pub mod registry;
 pub mod residency;
 pub mod structure;
+pub mod syntax;
 pub mod translate;
 pub mod types;
 pub mod udfs;

@@ -1,32 +1,65 @@
 # Command line
 
-The parcel CLI validates and lints contracts, checks data against them, compiles them, imports ODCS definitions, and verifies custom functions.
+The parcel CLI lints and validates contracts, checks data against them, compiles them, imports ODCS definitions, and verifies custom functions.
 
 ```text
 parcel COMMAND [OPTIONS]
 ```
 
-## Validate and lint
+## Lint and validate
 
-| Command | Result |
+| Command | Reads | Answers |
+| --- | --- | --- |
+| `parcel lint CONTRACT` | the contract file only | Is it written well? |
+| `parcel validate CONTRACT` | the file, then the data's column types | Is it written well, and does it compile against these columns? |
+| `parcel check CONTRACT --data FILE` | the file, column types, rows and callers | What does it do to this data? See {doc}`checking`. |
+
+### Lint
+
+`lint` needs no data, no column types and no functions. It reports:
+
+- **Problems**, which fail the command: YAML and field mistakes, rule ids, type names in `expose` and `extensions`, expressions that do not parse, an operation reading a namespace it may not, unknown `ctx` fields, undeclared `other` fields, and transforms of columns not in `expose`.
+- **Warnings and notes**, which do not: rules that are legal but probably not what you meant.
+
+```bash
+parcel lint orders.yaml
+```
+
+```text
+✓ orders.yaml  0 warnings  0 notes
+```
+
+| Lint | Points out |
 | --- | --- |
-| `parcel validate CONTRACT` | Whether the contract is correct and compiles. Every problem is listed with its line and a suggested fix. |
-| `parcel lint CONTRACT` | Validates, then points out rules that are legal but probably not what you meant. |
+| `admit-reads-only-ctx` | An `admit` that reads only `ctx` keeps every row or none. `decide` refuses the caller by name instead. |
+| `unsatisfiable-callers` | Two rules that require different values of one `ctx` field, so no caller passes both. |
+| `constant-rule` | A condition that reads nothing and always gives the same answer. |
+| `duplicate-condition` | Two rules of one operation that check the same condition. |
+| `unused-extension` | A declared `extensions` field that no rule reads. |
+| `open-access`, `no-owner`, `contract-name` | Notes: no access rules, no `owner`, a name without an `<area>/` prefix. |
 
-Neither needs data. From `examples/suppliers`:
+| Option | Meaning |
+| --- | --- |
+| `--deny-warnings` | Exit with status 1 on warnings, for CI. |
+| `--json` | Print `diagnostics` and `lints` as JSON. |
+
+### Validate
+
+`validate` lints first. If the file has problems, it stops there. Otherwise it type-checks and compiles every rule against the data's column types: columns exist, types line up, functions are loaded. It reads no rows.
 
 ```bash
 parcel validate orders.yaml --schema orders.csv
 ```
 
 ```text
-✓ purchasing/orders v1
+✓ purchasing/orders v1.0.0
   rules     2  1 admit, 1 assert
   columns   2/3
   types     orders.csv
+  lint      0 warnings  0 notes
 ```
 
-`columns` is exposed columns out of the data's columns.
+`columns` is exposed columns out of the data's columns. Lint warnings and notes print above, and do not fail `validate`.
 
 When a contract has problems, each one shows where it is and what to change:
 
@@ -38,13 +71,12 @@ error[Document] `positive_amount` (assert) needs `on_fail`
    │
    = help: on_fail: drop (exclude row) | deny (invalidate dataset) | report (count only)
 
-✗ orders.yaml  1 problem
-  types     orders.csv
+✗ orders.yaml  1 problem  0 warnings  0 notes
 ```
 
 ### Where column types come from
 
-Rules are checked against the names and types of the data's columns. `validate`, `lint` and `compile` take them from the first of:
+`validate` and `compile` take column names and types from the first of:
 
 1. `--schema FILE`: a CSV file, Parquet file or directory of Parquet files.
 2. The contract's `binding`, when it names Parquet data on this machine. A relative path is read from the contract's directory.
@@ -57,19 +89,7 @@ The `types` line says which was used. Without data, a rule that reads a column m
 | `--schema FILE` | Column names and types to check against. |
 | `--type COLUMN=TYPE` | Read a CSV column as this type, e.g. `--type postal_code=utf8`. Repeatable. |
 | `--function MODULE=MANIFEST` | Load a custom function. Repeatable. |
-| `--json` | Print the result as JSON, with `diagnostics` (and `lints` for `lint`). |
-| `--deny-warnings` | `lint` only: exit with status 1 on warnings, for CI. |
-
-### Lints
-
-| Lint | Points out |
-| --- | --- |
-| `admit-reads-only-ctx` | An `admit` that reads only `ctx` keeps every row or none. `decide` refuses the caller by name instead. |
-| `unsatisfiable-callers` | Two rules that require different values of one `ctx` field, so no caller passes both. |
-| `constant-rule` | A condition that reads nothing and always gives the same answer. |
-| `duplicate-condition` | Two rules of one operation that check the same condition. |
-| `unused-extension` | A declared `extensions` field that no rule reads. |
-| `open-access`, `no-owner`, `contract-name`, `binding-not-found` | Notes: no access rules, no `owner`, a name without an `<area>/` prefix, or a local binding that does not exist. |
+| `--json` | Print `diagnostics` and `lints` as JSON. |
 
 ## Check and compile
 

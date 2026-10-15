@@ -8,7 +8,7 @@ The crate re-exports `ContractDoc`, `Registry`, `check_contract`, `compile`, `co
 | [Function registry](rust-registry.md) | `Registry`, entries, manifests, signatures, and pins. |
 | [Compilation results](rust-compilation.md) | `Compilation`, `CompiledContract`, validation and write plans. |
 | [Diagnostics](rust-diagnostics.md) | Error codes, fields, and constructors. |
-| [Lints](rust-lint.md) | Warnings and notes for contracts that compile. |
+| [Lint](rust-lint.md) | Checking a contract from the document alone: problems, warnings and notes. |
 
 ## `check_contract`
 

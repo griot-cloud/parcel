@@ -3,6 +3,19 @@
 A version reaches users when it lands on `main` untagged: CI builds, tests and publishes it,
 then tags it. See [CONTRIBUTING](docs/contributing.md#releasing).
 
+## Unreleased
+
+- `parcel lint` reads the contract file only: no `--schema`, `--type` or `--function`, no data.
+  It reports problems the file shows (rule ids, type names, expressions that do not parse,
+  namespaces an operation may not read, unknown `ctx` fields, undeclared `other` fields,
+  transforms of unexposed columns) and lints.
+- `parcel validate` lints first and stops on problems; otherwise it type-checks and compiles,
+  and prints lint warnings and notes with the result.
+- `parcel_core::lint::lint(doc)` returns a `Report { problems, lints }` and no longer takes a
+  checked contract. `parcel_core::syntax::reads` says what an expression reads, without types.
+- The `binding-not-found` lint is gone; `validate`'s `types` line says when a binding has no
+  Parquet files.
+
 ## [0.0.4]: validate, lint, per-caller check
 
 - `parcel validate CONTRACT`: checks a contract compiles. No data needed.

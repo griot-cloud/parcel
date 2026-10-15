@@ -1,14 +1,23 @@
-# Lints
+# Lint
 
-`parcel_core::lint` points at contracts that compile but probably do not do what their author meant. A lint never refuses a contract.
+`parcel_core::lint` checks a contract from the document alone: no schema, no column types, no functions.
 
 ## `lint`
 
 ```rust
-pub fn lint(doc: &ContractDoc, checked: &CheckedContract) -> Vec<Lint>;
+pub fn lint(doc: &ContractDoc) -> Report;
 ```
 
-`doc` is the document as written, before inheritance; `checked` is the result of `check_contract` (or `check::check_layers` for an inheriting contract).
+`doc` is the document as written, before inheritance. For a child contract, checks that need the parent's `expose` or `extensions` are left to `check_contract`.
+
+## `Report`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `problems` | `Vec<Diagnostic>` | What `check_contract` would also refuse: rule ids, type names, expressions that do not parse, an operation reading a namespace it may not, unknown `ctx` fields, undeclared `other` fields, transforms of unexposed columns, shape parameters, residency terms. |
+| `lints` | `Vec<Lint>` | Rules that are legal but probably not what their author meant. |
+
+Expressions are read with `parcel_core::syntax::reads(rule, source)`, which returns the namespaces, `ctx` fields, columns and extension fields an expression reads, without types.
 
 ## `Lint`
 
@@ -33,5 +42,3 @@ pub fn lint(doc: &ContractDoc, checked: &CheckedContract) -> Vec<Lint>;
 | `open-access` | Note | No `decide` or `admit` rule: every caller may read every row. |
 | `no-owner` | Note | The contract names no `owner`. |
 | `contract-name` | Note | The name has no `<area>/` prefix. |
-
-The command line adds `binding-not-found`, a note, when a local Parquet binding does not exist.
