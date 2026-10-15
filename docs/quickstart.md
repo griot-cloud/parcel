@@ -69,7 +69,7 @@ These profiles mock `ctx` for the check: `id` identifies the caller, `tenant` id
 parcel validate orders.yaml --schema orders.csv
 ```
 
-`validate` checks that the contract is correct and compiles, without evaluating any data. `--schema orders.csv` supplies the column names and types; the rules read `supplier_id`, which the contract does not expose, so its type must come from the data. If something is wrong, each problem is listed with its line and what to change. `parcel lint orders.yaml --schema orders.csv` also points out rules that are legal but probably not what you meant.
+`validate` checks that the contract is correct and compiles, without evaluating any data. `--schema orders.csv` supplies the column names and types; the rules read `supplier_id`, which the contract does not expose, so its type must come from the data. If something is wrong, each problem is listed with its line and what to change. `parcel lint orders.yaml` checks the file alone, with no data: whether it is written well, and rules that are legal but probably not what you meant. `validate` runs it first.
 
 ## Check the contract
 

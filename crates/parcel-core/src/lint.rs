@@ -1,16 +1,22 @@
-//! Lints: contracts that compile but probably do not do what their author meant.
+//! Lint: whether a contract is written well, from the document alone.
 //!
-//! A diagnostic refuses a contract. A lint never does: it points at a rule that is legal but
-//! suspicious (a warning) or at something worth adding (a note), and says what to write instead.
+//! Linting needs no data, no column types and no functions. It reports problems the file
+//! itself shows (a malformed rule id, a type name that does not exist, an expression that does
+//! not parse, an operation reading a namespace it may not) and lints: rules that are legal but
+//! probably not what their author meant (warnings), or something worth adding (notes).
+//! Whether the rules type-check against the data's columns is `validate`'s job
+//! ([`crate::check_contract`]), which a clean lint lets run.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use crate::cel_print::{Style, print};
-use crate::check::{CheckedContract, CheckedRule, ProducerKind};
-use crate::document::ContractDoc;
-use crate::ir::{BinOp, CtxField, DatasetField, ExprKind, Lit, TExpr, Var};
+use crate::check::{ExposedColumn, namespace_problem, rule_id_problems, shape_op, type_help};
+use crate::diag::{Code, Diagnostic, did_you_mean};
+use crate::document::{ContractDoc, Rule};
+use crate::ir::CtxField;
+use crate::syntax::{Reads, reads};
+use crate::types::parse_type_name;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,134 +59,323 @@ impl Lint {
     }
 }
 
-/// Every lint for a contract that has passed the check. `doc` is the document as written,
-/// before inheritance, so notes about it name what its author can change.
-pub fn lint(doc: &ContractDoc, c: &CheckedContract) -> Vec<Lint> {
-    let mut out = Vec::new();
-    use Severity::*;
+/// What linting found: problems, which `validate` would also refuse, and lints, which it
+/// would not.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Report {
+    pub problems: Vec<Diagnostic>,
+    pub lints: Vec<Lint>,
+}
 
-    for r in &c.rules {
-        let id = r.id();
-        if let CheckedRule::Admit { expr, .. } = r
-            && !expr.expr.ns.row
+/// Lint a contract as written. `doc` is not resolved against its parents, so a child
+/// contract's checks that need the parent's `expose` or `extensions` are left to `validate`.
+pub fn lint(doc: &ContractDoc) -> Report {
+    let mut problems = Vec::new();
+    let child = doc.inherits.is_some();
+
+    if let Some(terms) = &doc.residency
+        && let Err(message) = terms.validate()
+    {
+        problems.push(Diagnostic::new(Code::Residency, None, message));
+    }
+    problems.extend(rule_id_problems(&doc.rules));
+
+    // Type names, in expose and extensions.
+    let mut exposed = Vec::new();
+    let mut names = BTreeSet::new();
+    for col in doc.expose.iter().flatten() {
+        if !names.insert(col.name.as_str()) {
+            problems.push(
+                Diagnostic::new(
+                    Code::DuplicateExpose,
+                    None,
+                    format!("column `{}` is exposed twice", col.name),
+                )
+                .with_help("remove one"),
+            );
+            continue;
+        }
+        match parse_type_name(&col.type_name) {
+            Ok(t) => exposed.push(ExposedColumn {
+                name: col.name.clone(),
+                type_name: col.type_name.clone(),
+                data_type: t,
+            }),
+            Err(msg) => problems.push(
+                Diagnostic::new(Code::BadType, None, format!("expose `{}`: {msg}", col.name))
+                    .with_help(type_help(&col.type_name)),
+            ),
+        }
+    }
+    let declared = |ns: &str| -> BTreeSet<String> {
+        let x = doc.extensions.as_ref();
+        let m = match ns {
+            "row" => x.map(|x| &x.row),
+            "ctx" => x.map(|x| &x.ctx),
+            _ => x.map(|x| &x.dataset),
+        };
+        m.map(|m| m.keys().cloned().collect()).unwrap_or_default()
+    };
+    if let Some(x) = &doc.extensions {
+        for (ns, decl) in [("row", &x.row), ("ctx", &x.ctx), ("dataset", &x.dataset)] {
+            for (field, type_name) in decl {
+                if let Err(msg) =
+                    parse_type_name(type_name).and_then(|t| crate::types::Type::from_arrow(&t))
+                {
+                    problems.push(
+                        Diagnostic::new(
+                            Code::BadType,
+                            None,
+                            format!("extensions.{ns}.{field}: {msg}"),
+                        )
+                        .with_help(type_help(type_name)),
+                    );
+                }
+            }
+        }
+    }
+
+    // Each rule: it parses, reads only what its operation may, names real caller fields,
+    // and targets exposed columns.
+    let mut transformed: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut read: Vec<(&Rule, Reads)> = Vec::new();
+    for rule in &doc.rules {
+        let id = rule.id();
+        let source = match rule {
+            Rule::Decide(r) => Some(&r.expr),
+            Rule::Admit(r) => Some(&r.expr),
+            Rule::Assert(r) => Some(&r.expr),
+            Rule::Transform(r) => Some(&r.expr),
+            Rule::Guarantee(r) => Some(&r.expr),
+            Rule::Shape(r) => r.unless.as_ref(),
+        };
+        if let Rule::Transform(t) = rule {
+            if let Some(prev) = transformed.insert(&t.column, id) {
+                problems.push(Diagnostic::new(
+                    Code::DuplicateTransform,
+                    Some(id),
+                    format!("column `{}` already has a transform, `{prev}`", t.column),
+                ));
+            }
+            if doc.expose.is_some() && !exposed.iter().any(|c| c.name == t.column) {
+                let help = match did_you_mean(&t.column, exposed.iter().map(|c| c.name.as_str())) {
+                    Some(c) => format!("did you mean `{c}`?"),
+                    None => format!("expose `{}` first", t.column),
+                };
+                problems.push(
+                    Diagnostic::new(
+                        Code::TransformTarget,
+                        Some(id),
+                        format!("transform target `{}` is not an exposed column", t.column),
+                    )
+                    .with_help(help),
+                );
+            }
+        }
+        if let Rule::Shape(s) = rule
+            && doc.expose.is_some()
+            && let Err(msg) = shape_op(s, &exposed)
         {
+            problems.push(Diagnostic::new(Code::ShapeParams, Some(id), msg));
+        }
+        let Some(source) = source else { continue };
+        let r = match reads(id, source) {
+            Ok(r) => r,
+            Err(d) => {
+                problems.push(d);
+                continue;
+            }
+        };
+        if let Some(d) = namespace_problem(rule, source, r.ns, r.ctx_beyond_now()) {
+            problems.push(d);
+        }
+        for field in &r.ctx {
+            if let Some(other) = field.strip_prefix("other.") {
+                if !child && !declared("ctx").contains(other) {
+                    problems.push(
+                        Diagnostic::new(
+                            Code::UnknownField,
+                            Some(id),
+                            format!("`ctx.other.{other}` is not declared"),
+                        )
+                        .with_help(format!("add `{other}: <type>` under `extensions.ctx`")),
+                    );
+                }
+            } else if CtxField::from_name(field).is_none() {
+                let names = CtxField::ALL.map(CtxField::name);
+                let help = match did_you_mean(field, names) {
+                    Some(n) => format!("did you mean `ctx.{n}`?"),
+                    None => format!(
+                        "fields: {}; declare others under `extensions.ctx`, read as `ctx.other.<field>`",
+                        names.join(", ")
+                    ),
+                };
+                problems.push(
+                    Diagnostic::new(
+                        Code::UnknownField,
+                        Some(id),
+                        format!("`ctx.{field}` is not a caller field"),
+                    )
+                    .with_help(help),
+                );
+            }
+        }
+        for field in &r.row {
+            if let Some(other) = field.strip_prefix("other.")
+                && !child
+                && !declared("row").contains(other)
+            {
+                problems.push(
+                    Diagnostic::new(
+                        Code::UnknownField,
+                        Some(id),
+                        format!("`row.other.{other}` is not declared"),
+                    )
+                    .with_help(format!("add `{other}: <type>` under `extensions.row`")),
+                );
+            }
+        }
+        read.push((rule, r));
+    }
+
+    // Enrichers compute stored values from the row alone.
+    let mut produced = Vec::new();
+    for e in doc.enrich.iter().flatten() {
+        match reads(&e.field, &e.expr) {
+            Ok(r) if r.ns.ctx || r.ns.dataset => problems.push(Diagnostic::new(
+                Code::Namespace,
+                None,
+                format!(
+                    "enrich `{}`: enrichers compute stored values and may read only row",
+                    e.field
+                ),
+            )),
+            Ok(r) => produced.push(r),
+            Err(d) => problems.push(d),
+        }
+    }
+    for p in doc.dataset_other.iter().flatten() {
+        if let Some(src) = &p.expr {
+            match reads(&p.field, src) {
+                Ok(r) => produced.push(r),
+                Err(d) => problems.push(d),
+            }
+        }
+    }
+
+    let lints = lints(doc, &read, &produced, &declared);
+    Report { problems, lints }
+}
+
+fn lints(
+    doc: &ContractDoc,
+    read: &[(&Rule, Reads)],
+    produced: &[Reads],
+    declared: &dyn Fn(&str) -> BTreeSet<String>,
+) -> Vec<Lint> {
+    use Severity::*;
+    let mut out = Vec::new();
+    let source = |rule: &Rule| match rule {
+        Rule::Decide(r) => r.expr.clone(),
+        Rule::Admit(r) => r.expr.clone(),
+        Rule::Assert(r) => r.expr.clone(),
+        Rule::Transform(r) => r.expr.clone(),
+        Rule::Guarantee(r) => r.expr.clone(),
+        Rule::Shape(r) => r.unless.clone().unwrap_or_default(),
+    };
+
+    for (rule, r) in read {
+        let id = rule.id();
+        if matches!(rule, Rule::Admit(_)) && !r.ns.row {
             out.push(Lint::new(
                 "admit-reads-only-ctx",
                 Warning,
                 Some(id),
-                format!("`{id}` reads only ctx: `{}`", expr.source),
+                format!("`{id}` reads only ctx: `{}`", source(rule)),
                 "use `op: decide`",
             ));
         }
-        if let CheckedRule::Decide { expr, .. }
-        | CheckedRule::Admit { expr, .. }
-        | CheckedRule::Assert { expr, .. }
-        | CheckedRule::Guarantee { expr, .. } = r
-            && expr.expr.ns.is_empty()
-            && expr.expr.pins().is_empty()
+        if matches!(
+            rule,
+            Rule::Decide(_) | Rule::Admit(_) | Rule::Assert(_) | Rule::Guarantee(_)
+        ) && r.ns.is_empty()
+            && !r.calls
         {
             out.push(Lint::new(
                 "constant-rule",
                 Warning,
                 Some(id),
-                format!("`{id}` reads no field: `{}`", expr.source),
+                format!("`{id}` reads no field: `{}`", source(rule)),
                 "read `row.<column>`, `ctx.<field>` or `dataset.<field>`",
             ));
         }
     }
 
-    // Two rules with the same operation and condition.
-    let mut seen: BTreeMap<(String, String), &str> = BTreeMap::new();
-    for r in &c.rules {
-        let op = match r {
-            CheckedRule::Decide { .. } => "decide",
-            CheckedRule::Admit { .. } => "admit",
-            CheckedRule::Assert { .. } => "assert",
-            CheckedRule::Guarantee { .. } => "guarantee",
-            _ => continue,
-        };
-        let cel = print(&r.exprs()[0].expr, Style::Canonical);
-        if let Some(first) = seen.insert((op.to_owned(), cel), r.id()) {
+    // Two rules with the same operation and condition, ignoring spacing.
+    let mut seen: BTreeMap<(&str, String), &str> = BTreeMap::new();
+    for (rule, _) in read {
+        if matches!(rule, Rule::Transform(_) | Rule::Shape(_)) {
+            continue;
+        }
+        let condition: String = source(rule).split_whitespace().collect();
+        if let Some(first) = seen.insert((rule.op_name(), condition), rule.id()) {
             out.push(Lint::new(
                 "duplicate-condition",
                 Warning,
-                Some(r.id()),
-                format!("`{}` repeats `{first}`", r.id()),
+                Some(rule.id()),
+                format!("`{}` repeats `{first}`", rule.id()),
                 "remove one",
             ));
         }
     }
 
     // Caller conditions that no caller can meet together: `ctx.tenant == 'a'` and `== 'b'`.
-    let mut required: BTreeMap<CtxField, (String, &str)> = BTreeMap::new();
-    for r in &c.rules {
-        let (CheckedRule::Decide { expr, .. } | CheckedRule::Admit { expr, .. }) = r else {
-            continue;
-        };
-        if expr.expr.ns.row {
+    let mut required: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
+    for (rule, r) in read {
+        if !matches!(rule, Rule::Decide(_) | Rule::Admit(_)) || r.ns.row {
             continue;
         }
-        for (field, value) in ctx_equalities(&expr.expr) {
-            match required.get(&field) {
-                Some((other, by)) if *other != value => out.push(Lint::new(
+        for (field, value) in &r.ctx_equalities {
+            match required.get(field.as_str()) {
+                Some((other, by)) if other != value => out.push(Lint::new(
                     "unsatisfiable-callers",
                     Warning,
-                    Some(r.id()),
+                    Some(rule.id()),
                     format!(
-                        "`{by}` needs ctx.{} == '{other}', `{}` needs ctx.{} == '{value}'",
-                        field.name(),
-                        r.id(),
-                        field.name()
+                        "`{by}` needs ctx.{field} == '{other}', `{}` needs ctx.{field} == '{value}'",
+                        rule.id()
                     ),
-                    format!(
-                        "to allow either: `ctx.{0} == '{other}' || ctx.{0} == '{value}'`",
-                        field.name()
-                    ),
+                    format!("to allow either: `ctx.{field} == '{other}' || ctx.{field} == '{value}'`"),
                 )),
                 Some(_) => {}
                 None => {
-                    required.insert(field, (value, r.id()));
+                    required.insert(field, (value, rule.id()));
                 }
             }
         }
     }
 
     // Declared extension fields nothing reads.
-    let mut read = BTreeSet::new();
-    let mut note = |e: &TExpr| {
-        e.walk(&mut |n| match &n.kind {
-            ExprKind::Var(Var::RowOther(f)) | ExprKind::HasOther(f) => {
-                read.insert(("row", f.clone()));
+    let all = read.iter().map(|(_, r)| r).chain(produced);
+    let mut used: BTreeSet<(&str, String)> = BTreeSet::new();
+    for r in all {
+        for f in &r.row {
+            if let Some(o) = f.strip_prefix("other.") {
+                used.insert(("row", o.to_owned()));
             }
-            ExprKind::Var(Var::CtxOther(f)) => {
-                read.insert(("ctx", f.clone()));
+        }
+        for f in &r.ctx {
+            if let Some(o) = f.strip_prefix("other.") {
+                used.insert(("ctx", o.to_owned()));
             }
-            ExprKind::Var(Var::Dataset(DatasetField::Other(f))) => {
-                read.insert(("dataset", f.clone()));
-            }
-            _ => {}
-        })
-    };
-    for r in &c.rules {
-        for x in r.exprs() {
-            note(&x.expr);
+        }
+        for f in &r.dataset_other {
+            used.insert(("dataset", f.clone()));
         }
     }
-    for (_, x) in &c.enrichers {
-        note(&x.expr);
-    }
-    for p in &c.producers {
-        if let ProducerKind::Aggregate { arg: Some(x), .. } = &p.kind {
-            note(&x.expr);
-        }
-    }
-    for (ns, fields) in [
-        ("row", &c.other.row),
-        ("ctx", &c.other.ctx),
-        ("dataset", &c.other.dataset),
-    ] {
-        for f in fields.keys() {
-            if !read.contains(&(ns, f.clone())) {
+    for ns in ["row", "ctx", "dataset"] {
+        for f in declared(ns) {
+            if !used.contains(&(ns, f.clone())) {
                 out.push(Lint::new(
                     "unused-extension",
                     Warning,
@@ -192,11 +387,12 @@ pub fn lint(doc: &ContractDoc, c: &CheckedContract) -> Vec<Lint> {
         }
     }
 
-    let has_access = c
+    let child = doc.inherits.is_some();
+    let has_access = doc
         .rules
         .iter()
-        .any(|r| matches!(r, CheckedRule::Decide { .. } | CheckedRule::Admit { .. }));
-    if !has_access && doc.inherits.is_none() {
+        .any(|r| matches!(r, Rule::Decide(_) | Rule::Admit(_)));
+    if !has_access && !child {
         out.push(Lint::new(
             "open-access",
             Note,
@@ -205,7 +401,7 @@ pub fn lint(doc: &ContractDoc, c: &CheckedContract) -> Vec<Lint> {
             "add `op: decide` or `op: admit`",
         ));
     }
-    if doc.owner.is_none() && doc.inherits.is_none() {
+    if doc.owner.is_none() && !child {
         out.push(Lint::new(
             "no-owner",
             Note,
@@ -226,75 +422,101 @@ pub fn lint(doc: &ContractDoc, c: &CheckedContract) -> Vec<Lint> {
     out
 }
 
-/// `ctx.<field> == '<text>'` conditions that must all hold for `e` to be true.
-fn ctx_equalities(e: &TExpr) -> Vec<(CtxField, String)> {
-    match &e.kind {
-        ExprKind::Binary(BinOp::And, a, b) => {
-            let mut v = ctx_equalities(a);
-            v.extend(ctx_equalities(b));
-            v
-        }
-        ExprKind::Binary(BinOp::Eq, a, b) => match (&a.kind, &b.kind) {
-            (ExprKind::Var(Var::Ctx(f)), ExprKind::Lit(Lit::String(s)))
-            | (ExprKind::Lit(Lit::String(s)), ExprKind::Var(Var::Ctx(f))) => {
-                vec![(*f, s.clone())]
-            }
-            _ => Vec::new(),
-        },
-        _ => Vec::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Registry, check_contract};
-    use datafusion_common::arrow::datatypes::{DataType, Field, Schema};
 
-    fn lints(rules: &str) -> Vec<Lint> {
+    fn report(head: &str, rules: &str) -> Report {
         let src = format!(
-            "contract: sales/orders\nversion: 1\nowner: acme\nbinding: {{parquet: x/}}\nexpose:\n  - {{name: amount, type: int64}}\nrules:\n{rules}"
+            "contract: sales/orders\nversion: 1.0.0\nowner: acme\nbinding: {{parquet: x/}}\n{head}expose:\n  - {{name: amount, type: int64}}\n  - {{name: email, type: utf8}}\nrules:\n{rules}"
         );
-        let doc = ContractDoc::parse(&src).unwrap();
-        let schema = Schema::new(vec![Field::new("amount", DataType::Int64, true)]);
-        let c = check_contract(&doc, &schema, &Registry::builtin()).unwrap();
-        lint(&doc, &c)
+        lint(&ContractDoc::parse(&src).unwrap())
     }
 
-    fn names(l: &[Lint]) -> Vec<&str> {
-        l.iter().map(|l| l.name).collect()
+    fn names(r: &Report) -> Vec<&str> {
+        r.lints.iter().map(|l| l.name).collect()
+    }
+
+    fn codes(r: &Report) -> Vec<Code> {
+        r.problems.iter().map(|d| d.code).collect()
     }
 
     #[test]
     fn a_ctx_only_admit_is_a_decide() {
-        let l = lints("  - {id: mine, op: admit, expr: \"ctx.tenant == 'acme'\"}\n");
-        assert_eq!(names(&l), ["admit-reads-only-ctx"]);
+        let r = report(
+            "",
+            "  - {id: mine, op: admit, expr: \"ctx.tenant == 'acme'\"}\n",
+        );
+        assert!(r.problems.is_empty(), "{r:#?}");
+        assert_eq!(names(&r), ["admit-reads-only-ctx"]);
     }
 
     #[test]
     fn callers_no_one_can_be() {
-        let l = lints(
+        let r = report(
+            "",
             "  - {id: a, op: decide, expr: \"ctx.tenant == 'acme'\"}\n  - {id: b, op: decide, expr: \"ctx.tenant == 'globex' && ctx.purpose == 'x'\"}\n",
         );
-        assert_eq!(names(&l), ["unsatisfiable-callers"]);
-        assert_eq!(l[0].rule.as_deref(), Some("b"));
+        assert_eq!(names(&r), ["unsatisfiable-callers"]);
+        assert_eq!(r.lints[0].rule.as_deref(), Some("b"));
     }
 
     #[test]
     fn constants_duplicates_and_open_access() {
-        let l = lints(
-            "  - {id: a, op: assert, expr: \"row.amount > 0\", on_fail: drop}\n  - {id: b, op: assert, expr: \"row.amount > 0\", on_fail: report}\n  - {id: c, op: guarantee, expr: \"1 < 2\", on_fail: deny}\n",
+        let r = report(
+            "",
+            "  - {id: a, op: assert, expr: \"row.amount > 0\", on_fail: drop}\n  - {id: b, op: assert, expr: \"row.amount>0\", on_fail: report}\n  - {id: c, op: guarantee, expr: \"1 < 2\", on_fail: deny}\n",
         );
         assert_eq!(
-            names(&l),
+            names(&r),
             ["constant-rule", "duplicate-condition", "open-access"]
         );
     }
 
     #[test]
-    fn a_clean_contract_has_no_lints() {
-        let l =
-            lints("  - {id: mine, op: admit, expr: \"row.amount > 0 && ctx.tenant == 'acme'\"}\n");
-        assert!(l.is_empty(), "{l:#?}");
+    fn a_clean_contract_has_nothing_to_report() {
+        let r = report(
+            "",
+            "  - {id: mine, op: admit, expr: \"row.amount > 0 && ctx.tenant == 'acme'\"}\n",
+        );
+        assert_eq!(r, Report::default());
+    }
+
+    #[test]
+    fn problems_the_file_shows_without_data() {
+        let r = report(
+            "",
+            "  - {id: who, op: decide, expr: \"row.amount > 0\"}\n  - {id: Bad-Id, op: admit, expr: \"ctx.tennant == 'a'\"}\n  - {id: p, op: assert, expr: \"row.amount > 0 and true\", on_fail: drop}\n  - {id: m, op: transform, column: emial, expr: \"redact(row.email)\"}\n",
+        );
+        assert_eq!(
+            codes(&r),
+            [
+                Code::InvalidRuleId,
+                Code::Namespace,
+                Code::UnknownField,
+                Code::Parse,
+                Code::TransformTarget,
+            ]
+        );
+    }
+
+    #[test]
+    fn columns_are_not_lints_business() {
+        // Whether `row.nope` exists is a question for the data's schema: `validate`.
+        let r = report(
+            "",
+            "  - {id: a, op: assert, expr: \"row.nope > 0\", on_fail: drop}\n",
+        );
+        assert!(r.problems.is_empty(), "{r:#?}");
+    }
+
+    #[test]
+    fn extensions_are_checked_and_used() {
+        let r = report(
+            "extensions:\n  row: {amount_major: double, unused: int64}\n  ctx: {region: string}\nenrich:\n  - {field: amount_major, expr: \"double(row.amount) / 100.0\"}\n",
+            "  - {id: big, op: admit, expr: \"row.other.amount_major > 10.0 && ctx.other.region == 'EA'\"}\n  - {id: x, op: admit, expr: \"ctx.other.zone == 'z'\"}\n",
+        );
+        assert_eq!(codes(&r), [Code::UnknownField]);
+        assert_eq!(names(&r), ["admit-reads-only-ctx", "unused-extension"]);
     }
 }

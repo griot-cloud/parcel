@@ -12,7 +12,6 @@ use std::sync::Arc;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::{CsvReadOptions, ParquetReadOptions, SessionContext};
-use parcel_core::check::CheckedContract;
 use parcel_core::document::Source;
 use parcel_core::inherit::Resolved;
 use parcel_core::structure::Lines;
@@ -59,15 +58,6 @@ impl Contract {
         registry: &Registry,
     ) -> Result<Compilation, Vec<Diagnostic>> {
         parcel_core::compile::compile_resolved(&self.resolve()?, schema, registry)
-    }
-
-    pub fn checked(
-        &self,
-        schema: &Schema,
-        registry: &Registry,
-    ) -> Result<CheckedContract, Vec<Diagnostic>> {
-        let r = self.resolve()?;
-        parcel_core::check::check_layers(&r.doc, schema, registry, &r.layers)
     }
 
     /// The directory relative paths in the contract are read from.
@@ -147,10 +137,15 @@ pub async fn schema_for(
                 } else {
                     dir.join(local)
                 };
-                if path.exists() {
+                if path.is_dir() && !has_parquet(&path) {
+                    format!("binding {} has no Parquet files", path.display())
+                } else if path.exists() {
                     match read_schema(&path, hints).await {
                         Ok(s) => return Ok((s, TypesFrom::Binding(path))),
-                        Err(e) => format!("binding {} unreadable: {e}", path.display()),
+                        Err(e) => {
+                            let first = e.split(['.', '\n']).next().unwrap_or_default();
+                            format!("binding {} unreadable: {first}", path.display())
+                        }
                     }
                 } else {
                     format!("binding {} not found", path.display())
@@ -161,6 +156,22 @@ pub async fn schema_for(
         None => "no binding".into(),
     };
     Ok((Arc::new(expose_schema(doc)), TypesFrom::Expose { why }))
+}
+
+/// Whether a directory holds Parquet files, at any depth.
+fn has_parquet(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| {
+            let p = e.path();
+            if p.is_dir() {
+                has_parquet(&p)
+            } else {
+                p.extension().is_some_and(|x| x == "parquet")
+            }
+        })
 }
 
 /// The schema `expose` declares. A column whose type does not parse is kept as a placeholder,

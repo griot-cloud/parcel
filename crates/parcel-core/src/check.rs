@@ -240,10 +240,6 @@ pub fn check_layers(
     let e = |d: &mut Vec<Diagnostic>, code, rule: Option<&str>, msg: String| {
         d.push(Diagnostic::new(code, rule, msg))
     };
-    let type_help = |name: &str| match suggest_type_name(name) {
-        Some(t) => format!("did you mean `{t}`? types: {COMMON_TYPE_NAMES}"),
-        None => format!("types: {COMMON_TYPE_NAMES}"),
-    };
 
     // Declared extension fields (design 3.1).
     let mut other = OtherTypes::default();
@@ -305,31 +301,7 @@ pub fn check_layers(
         }
     }
 
-    // Rule ids: unique, and usable as column-name suffixes (`_c_<id>`).
-    let mut seen = BTreeSet::new();
-    for r in &doc.rules {
-        let id = r.id();
-        if !is_valid_id(id) {
-            d.push(
-                Diagnostic::new(
-                    Code::InvalidRuleId,
-                    Some(id),
-                    "invalid id; use [a-z][a-z0-9_]*",
-                )
-                .with_help(format!("try `{}`", suggest_id(id))),
-            );
-        }
-        if !seen.insert(id) {
-            d.push(
-                Diagnostic::new(
-                    Code::DuplicateRuleId,
-                    Some(id),
-                    "rule id is used more than once",
-                )
-                .with_help("rename one"),
-            );
-        }
-    }
+    d.extend(rule_id_problems(&doc.rules));
 
     // Transforms, indexed by column, so expose can tell a raw column from a transformed one.
     let mut transforms: BTreeMap<&str, &TransformRule> = BTreeMap::new();
@@ -865,25 +837,16 @@ fn classify_rule(
         })
     };
 
-    // What each operation may read, and the message that explains why not.
-    let namespace = |msg: String, instead: &str| {
-        vec![
-            Diagnostic::new(Code::Namespace, Some(id), msg)
-                .with_help(format!("{instead} ({NAMESPACES_BY_OP})")),
-        ]
-    };
-    let fits = |x: &CheckedExpr, allowed: NsSet, why: &str| -> Result<(), Vec<Diagnostic>> {
-        let ns = x.expr.ns;
-        let bad = (ns.row && !allowed.row)
-            || (ns.ctx && !allowed.ctx)
-            || (ns.dataset && !allowed.dataset);
-        if bad {
-            Err(namespace(
-                format!("{why} (`{}` reads {ns})", x.source),
-                &instead_of(rule, ns),
-            ))
-        } else {
-            Ok(())
+    // What each operation may read: the same check `lint` runs on the source alone.
+    let fits = |x: &CheckedExpr| -> Result<(), Vec<Diagnostic>> {
+        let mut ctx_beyond_now = false;
+        x.expr.walk(&mut |n| {
+            ctx_beyond_now |= matches!(n.kind, ExprKind::Var(Var::CtxOther(_)))
+                || matches!(n.kind, ExprKind::Var(Var::Ctx(f)) if f != CtxField::Now)
+        });
+        match namespace_problem(rule, &x.source, x.expr.ns, ctx_beyond_now) {
+            Some(d) => Err(vec![d]),
+            None => Ok(()),
         }
     };
     let boolean = |x: &CheckedExpr| -> Result<(), Vec<Diagnostic>> {
@@ -928,11 +891,7 @@ fn classify_rule(
     Ok(match rule {
         Rule::Decide(r) => {
             let x = check(&r.expr)?;
-            fits(
-                &x,
-                NsSet::CTX,
-                "decide rules are about the caller and may read only ctx",
-            )?;
+            fits(&x)?;
             boolean(&x)?;
             CheckedRule::Decide {
                 id: r.id.clone(),
@@ -941,11 +900,7 @@ fn classify_rule(
         }
         Rule::Admit(r) => {
             let x = check(&r.expr)?;
-            fits(
-                &x,
-                NsSet::ROW.union(NsSet::CTX),
-                "admit rules filter rows and may read only row and ctx",
-            )?;
+            fits(&x)?;
             boolean(&x)?;
             CheckedRule::Admit {
                 id: r.id.clone(),
@@ -954,13 +909,7 @@ fn classify_rule(
         }
         Rule::Assert(r) => {
             let x = check(&r.expr)?;
-            if x.expr.ns.ctx {
-                return Err(namespace(
-                    format!("assert rules cannot read ctx (`{}`)", x.source),
-                    "use `op: admit` to filter rows per caller, `op: decide` to refuse callers",
-                ));
-            }
-            fits(&x, NsSet::ROW, "assert rules may read only row")?;
+            fits(&x)?;
             boolean(&x)?;
             deterministic(&x)?;
             CheckedRule::Assert {
@@ -985,11 +934,7 @@ fn classify_rule(
                 ]);
             };
             let x = check(&r.expr)?;
-            fits(
-                &x,
-                NsSet::ROW.union(NsSet::CTX),
-                "transform rules may read only row and ctx",
-            )?;
+            fits(&x)?;
             let declared = Type::from_arrow(&target.data_type)
                 .map_err(|why| err(Code::UnreadableColumn, why))?;
             // A transform to `0` of a double column gives 0.0.
@@ -1014,25 +959,7 @@ fn classify_rule(
         }
         Rule::Guarantee(r) => {
             let x = check(&r.expr)?;
-            if x.expr.ns.row {
-                return Err(namespace(
-                    format!("guarantee rules cannot read row (`{}`)", x.source),
-                    "use `op: assert` for row checks, or a statistic such as `dataset.<column>.min`",
-                ));
-            }
-            // ctx.now is the one caller field a guarantee may read (freshness, design 4.6).
-            let mut ctx_other = false;
-            x.expr
-                .walk(&mut |n| ctx_other |= matches!(n.kind, ExprKind::Var(Var::CtxOther(_))));
-            if ctx_other || x.expr.ctx_fields().iter().any(|f| *f != CtxField::Now) {
-                return Err(namespace(
-                    format!(
-                        "guarantee rules may read dataset and ctx.now only (`{}`)",
-                        x.source
-                    ),
-                    "use `op: decide` to refuse callers",
-                ));
-            }
+            fits(&x)?;
             boolean(&x)?;
             deterministic(&x)?;
             CheckedRule::Guarantee {
@@ -1045,11 +972,7 @@ fn classify_rule(
             let unless = match &r.unless {
                 Some(src) => {
                     let x = check(src)?;
-                    fits(
-                        &x,
-                        NsSet::CTX,
-                        "`unless` is decided per caller and may read only ctx",
-                    )?;
+                    fits(&x)?;
                     boolean(&x)?;
                     Some(x)
                 }
@@ -1065,7 +988,7 @@ fn classify_rule(
     })
 }
 
-fn shape_op(r: &ShapeRule, exposed: &[ExposedColumn]) -> Result<ShapeOp, String> {
+pub(crate) fn shape_op(r: &ShapeRule, exposed: &[ExposedColumn]) -> Result<ShapeOp, String> {
     let p = &r.params;
     let allowed: &[&str] = match r.operator.as_str() {
         "noise" => &["sensitivity", "epsilon", "budget", "at"],
@@ -1179,5 +1102,103 @@ fn suggest_id(id: &str) -> String {
     match out.chars().next() {
         Some('a'..='z') => out,
         _ => format!("rule_{out}"),
+    }
+}
+
+/// "did you mean `int64`?" for a type name, with the common types.
+pub(crate) fn type_help(name: &str) -> String {
+    match suggest_type_name(name) {
+        Some(t) => format!("did you mean `{t}`? types: {COMMON_TYPE_NAMES}"),
+        None => format!("types: {COMMON_TYPE_NAMES}"),
+    }
+}
+
+/// Rule ids: unique, and usable as column-name suffixes (`_c_<id>`).
+pub(crate) fn rule_id_problems(rules: &[Rule]) -> Vec<Diagnostic> {
+    let mut d = Vec::new();
+    let mut seen = BTreeSet::new();
+    for r in rules {
+        let id = r.id();
+        if !is_valid_id(id) {
+            d.push(
+                Diagnostic::new(
+                    Code::InvalidRuleId,
+                    Some(id),
+                    "invalid id; use [a-z][a-z0-9_]*",
+                )
+                .with_help(format!("try `{}`", suggest_id(id))),
+            );
+        }
+        if !seen.insert(id) {
+            d.push(
+                Diagnostic::new(
+                    Code::DuplicateRuleId,
+                    Some(id),
+                    "rule id is used more than once",
+                )
+                .with_help("rename one"),
+            );
+        }
+    }
+    d
+}
+
+/// Whether `rule` may read what `src` reads: `ns`, and for a guarantee whether it reads a
+/// caller field other than `ctx.now`. Applies to a shape's `unless` for a shape rule.
+pub(crate) fn namespace_problem(
+    rule: &Rule,
+    src: &str,
+    ns: NsSet,
+    ctx_beyond_now: bool,
+) -> Option<Diagnostic> {
+    let id = rule.id();
+    let problem = |msg: String, instead: &str| {
+        Some(
+            Diagnostic::new(Code::Namespace, Some(id), msg)
+                .with_help(format!("{instead} ({NAMESPACES_BY_OP})")),
+        )
+    };
+    let only = |allowed: NsSet, why: &str| {
+        let bad = (ns.row && !allowed.row)
+            || (ns.ctx && !allowed.ctx)
+            || (ns.dataset && !allowed.dataset);
+        if bad {
+            problem(format!("{why} (`{src}` reads {ns})"), &instead_of(rule, ns))
+        } else {
+            None
+        }
+    };
+    match rule {
+        Rule::Decide(_) => only(
+            NsSet::CTX,
+            "decide rules are about the caller and may read only ctx",
+        ),
+        Rule::Admit(_) => only(
+            NsSet::ROW.union(NsSet::CTX),
+            "admit rules filter rows and may read only row and ctx",
+        ),
+        Rule::Assert(_) if ns.ctx => problem(
+            format!("assert rules cannot read ctx (`{src}`)"),
+            "use `op: admit` to filter rows per caller, `op: decide` to refuse callers",
+        ),
+        Rule::Assert(_) => only(NsSet::ROW, "assert rules may read only row"),
+        Rule::Transform(_) => only(
+            NsSet::ROW.union(NsSet::CTX),
+            "transform rules may read only row and ctx",
+        ),
+        Rule::Guarantee(_) if ns.row => problem(
+            format!("guarantee rules cannot read row (`{src}`)"),
+            "use `op: assert` for row checks, or a statistic such as `dataset.<column>.min`",
+        ),
+        // ctx.now is the one caller field a guarantee may read (freshness, design 4.6).
+        Rule::Guarantee(_) if ctx_beyond_now => problem(
+            format!("guarantee rules may read dataset and ctx.now only (`{src}`)"),
+            "use `op: decide` to refuse callers",
+        ),
+        Rule::Guarantee(_) => None,
+        Rule::Shape(_) => only(
+            NsSet::CTX,
+            "`unless` is decided per caller and may read only ctx",
+        ),
     }
 }

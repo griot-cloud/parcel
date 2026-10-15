@@ -14,7 +14,7 @@ cd "$here/suppliers"
 if "$P" validate orders.yaml >/dev/null 2>&1; then
   echo "orders.yaml should not validate without data: supplier_id is not exposed" >&2; exit 1
 fi
-"$P" lint orders.yaml --schema orders.csv --deny-warnings >/dev/null
+"$P" lint orders.yaml --deny-warnings >/dev/null
 "$P" check orders.yaml --data orders.csv --caller acme.yaml --caller globex.yaml | tail -6
 "$P" compile orders.yaml --schema orders.csv -o "$out/supplier_orders.json" >/dev/null
 

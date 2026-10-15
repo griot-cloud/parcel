@@ -13,9 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
-use datafusion::arrow::datatypes::SchemaRef;
 use parcel_core::compile::ReportEntry;
-use parcel_core::document::Source;
 use parcel_core::lint::{Lint, Severity};
 use parcel_core::registry::FunctionManifest;
 use parcel_core::{Compilation, Diagnostic, Registry};
@@ -56,18 +54,12 @@ enum Command {
     /// Validate a contract and report likely mistakes.
     Lint {
         contract: PathBuf,
-        #[command(flatten)]
-        schema: SchemaArg,
         /// Exit 1 on warnings.
         #[arg(long)]
         deny_warnings: bool,
         /// Print the result as JSON.
         #[arg(long)]
         json: bool,
-        #[command(flatten)]
-        functions: Functions,
-        #[command(flatten)]
-        types: TypeHints,
     },
     /// Compile a contract.
     Compile {
@@ -277,25 +269,15 @@ async fn run(cmd: Command) -> R {
             json,
             functions,
             types,
-        } => cmd_validate(&contract, &schema, json, None, &functions, &types).await,
+        } => {
+            let types_for = Some((&schema, &functions, &types));
+            cmd_lint(&contract, types_for, json, false).await
+        }
         Command::Lint {
             contract,
-            schema,
             deny_warnings,
             json,
-            functions,
-            types,
-        } => {
-            cmd_validate(
-                &contract,
-                &schema,
-                json,
-                Some(deny_warnings),
-                &functions,
-                &types,
-            )
-            .await
-        }
+        } => cmd_lint(&contract, None, json, deny_warnings).await,
         Command::Compile {
             contract,
             schema,
@@ -431,10 +413,7 @@ async fn run(cmd: Command) -> R {
 
 /// A contract compiled against its column types, ready to report on or run.
 pub(crate) struct Ready {
-    pub contract: Contract,
-    pub schema: SchemaRef,
     pub from: TypesFrom,
-    pub registry: Registry,
     pub compiled: Compilation,
 }
 
@@ -459,13 +438,7 @@ pub(crate) async fn ready(
     let (schema, from) = source::schema_for(&contract, schema, types).await?;
     let registry = functions.load(contract.doc.owner.as_deref())?;
     match contract.compile(&schema, &registry) {
-        Ok(compiled) => Ok(Some(Ready {
-            contract,
-            schema,
-            from,
-            registry,
-            compiled,
-        })),
+        Ok(compiled) => Ok(Some(Ready { from, compiled })),
         Err(mut diags) => {
             source::locate(&mut diags, &contract.source, Some(&from));
             emit(problems(&file, &contract.source, Some(&from), &diags));
@@ -493,97 +466,166 @@ fn problems(file: &str, source: &str, from: Option<&TypesFrom>, diags: &[Diagnos
     o
 }
 
-/// `validate`, or `lint` when `lint` is set (with whether warnings fail the command).
-async fn cmd_validate(
+/// `lint`, or `validate` when given where column types come from: lint the file, then, if it
+/// is clean, type-check and compile it against those types.
+async fn cmd_lint(
     path: &Path,
-    schema: &SchemaArg,
+    validate: Option<(&SchemaArg, &Functions, &TypeHints)>,
     json: bool,
-    lint: Option<bool>,
-    functions: &Functions,
-    types: &TypeHints,
+    deny_warnings: bool,
 ) -> R {
-    if json {
-        return validate_json(path, schema, lint.is_some(), functions, types).await;
-    }
-    let Some(ready) = ready(path, schema.schema.as_deref(), functions, types, true).await? else {
-        return Ok(ExitCode::from(1));
-    };
     let file = path.display().to_string();
-    let cc = &ready.compiled.contract;
-    let mut o = Out::default();
-
-    let Some(deny_warnings) = lint else {
-        o.line(format!(
-            "{} {}",
-            paint(GREEN, OK),
-            paint(BOLD, format!("{} v{}", cc.name, cc.version))
-        ));
-        rule_summary(&mut o, &cc.report);
-        ui::field(
-            &mut o,
-            "columns",
-            format!(
-                "{}/{}",
-                cc.exposed_schema.fields().len(),
-                ready.schema.fields().len()
-            ),
-        );
-        ui::field(&mut o, "types", &ready.from);
-        o.print();
-        return Ok(ExitCode::SUCCESS);
+    let contract = match Contract::read(path)? {
+        Ok(c) => c,
+        Err((source, diags)) => {
+            if json {
+                print_json(
+                    json!({"contract": file, "valid": false, "diagnostics": diags, "lints": []}),
+                )?;
+            } else {
+                problems(&file, &source, None, &diags).print();
+            }
+            return Ok(ExitCode::from(1));
+        }
     };
+    let mut report = parcel_core::lint::lint(&contract.doc);
+    source::locate(&mut report.problems, &contract.source, None);
+    locate_lints(&contract, &mut report.lints);
+    let lints = report.lints;
 
-    let lints = lints_for(&ready);
-    let place = Place {
-        file: &file,
-        source: Some(&ready.contract.source),
+    // Problems in the file itself: validate does not go on to the data.
+    if !report.problems.is_empty() || validate.is_none() {
+        let ok = report.problems.is_empty();
+        if json {
+            print_json(json!({
+                "contract": file, "valid": ok, "diagnostics": report.problems, "lints": lints,
+            }))?;
+        } else {
+            let mut o = Out::default();
+            let place = Place {
+                file: &file,
+                source: Some(&contract.source),
+            };
+            ui::diagnostics(&mut o, &place, &report.problems);
+            ui::lints(&mut o, &place, &lints);
+            o.blank();
+            o.line(summary(&file, report.problems.len(), &lints, deny_warnings));
+            o.print();
+        }
+        let warned = lints.iter().any(|l| l.severity == Severity::Warning);
+        return Ok(status(ok && !(deny_warnings && warned)));
+    }
+
+    let Some((schema, functions, types)) = validate else {
+        unreachable!("lint returned above");
     };
-    ui::lints(&mut o, &place, &lints);
+    let (schema, from) = source::schema_for(&contract, schema.schema.as_deref(), types).await?;
+    let registry = functions.load(contract.doc.owner.as_deref())?;
+    match contract.compile(&schema, &registry) {
+        Err(mut diags) => {
+            source::locate(&mut diags, &contract.source, Some(&from));
+            if json {
+                print_json(json!({
+                    "contract": file, "valid": false, "types_from": from.to_string(),
+                    "diagnostics": diags, "lints": lints,
+                }))?;
+            } else {
+                let mut o = Out::default();
+                let place = Place {
+                    file: &file,
+                    source: Some(&contract.source),
+                };
+                ui::diagnostics(&mut o, &place, &diags);
+                ui::lints(&mut o, &place, &lints);
+                o.blank();
+                o.line(summary(&file, diags.len(), &lints, false));
+                ui::field(&mut o, "types", &from);
+                o.print();
+            }
+            Ok(ExitCode::from(1))
+        }
+        Ok(compiled) => {
+            let cc = &compiled.contract;
+            if json {
+                print_json(json!({
+                    "contract": file, "name": cc.name, "version": cc.version, "valid": true,
+                    "types_from": from.to_string(), "diagnostics": [], "lints": lints,
+                }))?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            let mut o = Out::default();
+            let place = Place {
+                file: &file,
+                source: Some(&contract.source),
+            };
+            ui::lints(&mut o, &place, &lints);
+            o.blank();
+            o.line(format!(
+                "{} {}",
+                paint(GREEN, OK),
+                paint(BOLD, format!("{} v{}", cc.name, cc.version))
+            ));
+            rule_summary(&mut o, &cc.report);
+            ui::field(
+                &mut o,
+                "columns",
+                format!(
+                    "{}/{}",
+                    cc.exposed_schema.fields().len(),
+                    schema.fields().len()
+                ),
+            );
+            ui::field(&mut o, "types", &from);
+            ui::field(&mut o, "lint", counts(&lints));
+            o.print();
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+fn print_json(v: serde_json::Value) -> Result<(), String> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
+/// `2 warnings  1 note`
+fn counts(lints: &[Lint]) -> String {
     let warnings = lints
         .iter()
         .filter(|l| l.severity == Severity::Warning)
         .count();
-    let notes = lints.len() - warnings;
-    let summary = format!(
-        "{file}  {}  {}",
+    format!(
+        "{}  {}",
         ui::plural(warnings, "warning", "warnings"),
-        ui::plural(notes, "note", "notes")
-    );
-    o.blank();
-    let mark = match (warnings, deny_warnings) {
-        (0, _) => paint(GREEN, OK),
-        (_, true) => paint(RED, ui::FAIL),
-        (_, false) => paint(YELLOW, WARN),
-    };
-    o.line(format!("{mark} {}", paint(BOLD, summary)));
-    ui::field(&mut o, "types", &ready.from);
-    o.print();
-    Ok(status(!(deny_warnings && warnings > 0)))
+        ui::plural(lints.len() - warnings, "note", "notes")
+    )
 }
 
-/// The lints for a compiled contract, located in its source, with a note when the binding
-/// is not where it says.
-fn lints_for(ready: &Ready) -> Vec<Lint> {
-    let c = &ready.contract;
-    let mut lints = match c.checked(&ready.schema, &ready.registry) {
-        Ok(checked) => parcel_core::lint::lint(&c.doc, &checked),
-        Err(_) => Vec::new(),
+/// The closing line: `✗ orders.yaml  2 problems  1 warning  0 notes`.
+fn summary(file: &str, problems: usize, lints: &[Lint], deny_warnings: bool) -> String {
+    let warned = lints.iter().any(|l| l.severity == Severity::Warning);
+    let mark = if problems > 0 || (deny_warnings && warned) {
+        paint(RED, ui::FAIL)
+    } else if warned {
+        paint(YELLOW, WARN)
+    } else {
+        paint(GREEN, OK)
     };
-    if let (TypesFrom::Expose { why }, Some(Source::Parquet(loc))) =
-        (&ready.from, c.doc.binding.as_ref().map(|b| &b.source))
-        && why.contains("not found")
-    {
-        lints.push(Lint {
-            name: "binding-not-found",
-            severity: Severity::Note,
-            rule: None,
-            message: format!("binding `{loc}` not found"),
-            help: "paths are relative to the contract".into(),
-            line: None,
-        });
-    }
+    let head = if problems > 0 {
+        format!("{file}  {}  ", ui::plural(problems, "problem", "problems"))
+    } else {
+        format!("{file}  ")
+    };
+    format!("{mark} {}", paint(BOLD, format!("{head}{}", counts(lints))))
+}
+
+/// Each lint's line in the source.
+fn locate_lints(c: &Contract, lints: &mut [Lint]) {
     let lines = c.lines();
-    for l in &mut lints {
+    for l in lints.iter_mut() {
         l.line = match (&l.rule, l.name) {
             (Some(r), "admit-reads-only-ctx" | "constant-rule" | "duplicate-condition") => {
                 lines.rule_expr(r)
@@ -591,69 +633,10 @@ fn lints_for(ready: &Ready) -> Vec<Lint> {
             (Some(r), _) => lines.rule(r),
             (None, "unused-extension") => lines.top("extensions"),
             (None, "open-access") => lines.top("rules").or_else(|| lines.top("contract")),
-            (None, "binding-not-found") => lines.top("binding"),
             (None, _) => lines.top("contract"),
         };
     }
     lints.sort_by_key(|l| (l.severity, l.line));
-    lints
-}
-
-async fn validate_json(
-    path: &Path,
-    schema: &SchemaArg,
-    lint: bool,
-    functions: &Functions,
-    types: &TypeHints,
-) -> R {
-    let file = path.display().to_string();
-    let print = |v: serde_json::Value| -> Result<(), String> {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?
-        );
-        Ok(())
-    };
-    let contract = match Contract::read(path)? {
-        Ok(c) => c,
-        Err((_, diags)) => {
-            print(json!({"contract": file, "valid": false, "diagnostics": diags}))?;
-            return Ok(ExitCode::from(1));
-        }
-    };
-    let (schema, from) = source::schema_for(&contract, schema.schema.as_deref(), types).await?;
-    let registry = functions.load(contract.doc.owner.as_deref())?;
-    match contract.compile(&schema, &registry) {
-        Err(mut diags) => {
-            source::locate(&mut diags, &contract.source, Some(&from));
-            print(json!({
-                "contract": file, "valid": false, "types_from": from.to_string(), "diagnostics": diags,
-            }))?;
-            Ok(ExitCode::from(1))
-        }
-        Ok(compiled) => {
-            let ready = Ready {
-                contract,
-                schema,
-                from,
-                registry,
-                compiled,
-            };
-            let mut out = json!({
-                "contract": file,
-                "name": ready.compiled.contract.name,
-                "version": ready.compiled.contract.version,
-                "valid": true,
-                "types_from": ready.from.to_string(),
-                "diagnostics": [],
-            });
-            if lint {
-                out["lints"] = json!(lints_for(&ready));
-            }
-            print(out)?;
-            Ok(ExitCode::SUCCESS)
-        }
-    }
 }
 
 /// `rules  5 · 2 decide, 3 assert`

@@ -34,19 +34,24 @@ pub struct OtherTypes {
     pub dataset: BTreeMap<String, Type>,
 }
 
-/// Parse and check one CEL expression.
-pub fn check_expr(env: &Env, rule: &str, source: &str) -> Result<TExpr, Vec<Diagnostic>> {
-    let ast = Parser::new().parse(source).map_err(|errs| {
+/// Parse one CEL expression, or say why it does not parse, with a hint for common mistakes.
+pub(crate) fn parse(rule: &str, source: &str) -> Result<IdedExpr, Diagnostic> {
+    Parser::new().parse(source).map_err(|errs| {
         let d = Diagnostic::new(
             Code::Parse,
             Some(rule),
             format!("cannot parse `{source}`: {errs}"),
         );
-        vec![match parse_hint(source) {
+        match parse_hint(source) {
             Some(h) => d.with_help(h),
             None => d,
-        }]
-    })?;
+        }
+    })
+}
+
+/// Parse and check one CEL expression.
+pub fn check_expr(env: &Env, rule: &str, source: &str) -> Result<TExpr, Vec<Diagnostic>> {
+    let ast = parse(rule, source).map_err(|d| vec![d])?;
     let mut c = Checker {
         env,
         rule,
@@ -1063,7 +1068,7 @@ fn exact_decimal(e: &TExpr) -> Option<Lit> {
     }
 }
 
-const PROFILE_NAMES: [&str; 19] = [
+pub(crate) const PROFILE_NAMES: [&str; 19] = [
     "size",
     "startsWith",
     "endsWith",
