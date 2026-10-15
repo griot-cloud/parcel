@@ -28,14 +28,23 @@ The example contract, `orders.yaml`, allows Acme to access all suppliers' orders
 parcel check orders.yaml --data orders.csv
 ```
 
-Parcel checks the contract's definitions against the supplied columns and types, then evaluates its quality rules against every row. The quality section of the output is:
+Parcel checks the contract's definitions against the supplied columns and types, then evaluates every rule against the rows. The output starts with the contract, the row count and the verdict, then has one section per caller:
 
 ```text
-verdict over 4 rows: VALID
-  assert    positive_amount            75.00% pass  (1 failing)
+purchasing/orders v1
+4 rows  orders.csv  valid
+
+==== default caller ========================================
+columns  2/3
+rows     0/4
+
+Policies
+  supplier_orders  ✗  admit      4 removed
 ```
 
-Order 3 fails because its amount is `-5`. The dataset remains valid because `on_fail: drop` excludes that row. With `on_fail: deny`, the same failure makes the dataset invalid. With `on_fail: report`, it is recorded without excluding the row.
+The default caller has an empty tenant, so `supplier_orders` removes every order. Pass callers to see the quality rules over the rows each one receives.
+
+Order 3 fails `positive_amount` because its amount is `-5`. The dataset remains valid because `on_fail: drop` excludes that row. With `on_fail: deny`, the same failure makes the dataset invalid. With `on_fail: report`, it is recorded without excluding the row.
 
 `--data` accepts a CSV file, a Parquet file, or a directory of Parquet files. This is the data checked by the command; it does not load the location in `binding`.
 
@@ -61,18 +70,62 @@ Pass both profiles to compare their access:
 parcel check orders.yaml --data orders.csv --caller acme.yaml --caller globex.yaml
 ```
 
-The caller section of the output is:
+The output is:
 
 ```text
-caller acme/purchasing-team sees 3 of 4 rows
-caller globex/supplier-analyst sees 2 of 4 rows
+purchasing/orders v1
+4 rows  orders.csv  valid
+
+==== acme/purchasing-team ==================================
+columns  2/3
+rows     3/4
+
+Policies
+  supplier_orders  ✓  admit
+
+Quality                 pass
+  positive_amount  !   75.0%  1 dropped
+                              -5
+
+==== globex/supplier-analyst ===============================
+columns  2/3
+rows     2/4
+
+Policies
+  supplier_orders  ✓  admit      1 removed
+
+Quality                 pass
+  positive_amount  !   66.7%  1 dropped
+                              -5
+
+differential  ✓  12
 ```
 
-Acme can see orders 1, 2, and 4. Globex can see orders 1 and 4. Order 3 fails the quality rule for both callers. The report prints counts, rather than the rows themselves. If a `decide` rule refuses a caller, it names that rule instead.
+Each caller section shows:
+
+| Line | Meaning |
+| --- | --- |
+| `columns` | Exposed columns out of the data's columns, and any the caller's transforms change. |
+| `rows` | Rows the caller receives out of all rows, or `refused`. |
+| Policies | Each `decide`, `admit`, `transform` and `shape` rule for this caller: rows removed, values changed, or the field that refused them. |
+| Quality | Each `assert` over the rows the caller's `admit` rules keep: pass rate, rows dropped or failed, and the commonest failing values. Then each `guarantee`. |
+
+Acme receives orders 1, 2 and 4. Globex receives orders 1 and 4: `supplier_orders` removes order 2, and `positive_amount` drops order 3. The report prints counts and failing values, not rows. A caller refused by a `decide` rule gets the rule, its condition and the caller's value:
+
+```text
+Policies
+  analytics_only     ✗  decide
+                        ctx.purpose in ["analytics", "reporting"]
+                        ctx.purpose = "marketing"
+```
+
+A rule's `message`, when the contract gives one, appears after it.
+
+On a terminal, each rule shows a progress bar while it runs. All rules for all callers run at the same time.
 
 Profiles can be YAML or JSON. `id`, `tenant`, and `purpose` are required. Optional fields are `tier`, `clearance`, `classification`, `roles`, `now`, and `other`. Without `--caller`, the command uses `id: check`, `tenant: ""`, and `purpose: analytics`.
 
-The report ends with an internal consistency check. “Interpreter and DataFusion agree” means parcel's two rule evaluators produced matching results. This is separate from the quality verdict and caller access counts. `--sample` limits this internal comparison; quality validation still checks every supplied row.
+The report ends with `differential`: the number of evaluations on which parcel's two rule evaluators, the CEL interpreter and DataFusion, agreed. This is separate from the quality verdict and caller access counts. `--sample` limits this internal comparison; quality validation still checks every supplied row.
 
 ## Save a JSON report
 
@@ -137,7 +190,7 @@ It produces the same report format. For contracts that use custom functions, see
 | Status | Meaning |
 | --- | --- |
 | `0` | The dataset is valid and the two evaluators agree. |
-| `1` | Compilation diagnostics, invalid data, or differing evaluator results. |
+| `1` | Problems in the contract, invalid data, or differing evaluator results. |
 | `2` | An input, parsing, or execution error. |
 
 A caller refusal alone does not make the command fail. Check the caller results when testing access policies.

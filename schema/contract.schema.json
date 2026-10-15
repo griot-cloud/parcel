@@ -8,9 +8,8 @@
       "type": "string"
     },
     "version": {
-      "type": "integer",
-      "format": "uint32",
-      "minimum": 0
+      "description": "A semantic version, e.g. `1.0.0`; a whole number N means N.0.0.",
+      "$ref": "#/$defs/Version"
     },
     "owner": {
       "description": "The tenant that owns the contract: its registered functions are callable here.",
@@ -101,6 +100,19 @@
     "version"
   ],
   "$defs": {
+    "Version": {
+      "description": "A semantic version, MAJOR.MINOR.PATCH, e.g. `1.0.0` or `2.1.0-beta.1`. A whole number N means N.0.0.",
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+        },
+        {
+          "type": "integer",
+          "minimum": 0
+        }
+      ]
+    },
     "Binding": {
       "description": "Where the data physically is. Callers never see this. Exactly one of `parquet` (a location) or `iceberg` (a `namespace.table` identifier).",
       "oneOf": [
@@ -192,6 +204,13 @@
             "expr": {
               "type": "string"
             },
+            "message": {
+              "description": "Shown in reports and to a caller the rule refuses, e.g. `Analytics only`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "op": {
               "type": "string",
               "const": "decide"
@@ -212,6 +231,13 @@
             },
             "expr": {
               "type": "string"
+            },
+            "message": {
+              "description": "Shown in reports and to a caller the rule refuses, e.g. `Analytics only`.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "op": {
               "type": "string",
@@ -236,6 +262,13 @@
             },
             "on_fail": {
               "$ref": "#/$defs/AssertOnFail"
+            },
+            "message": {
+              "description": "Shown in reports and to a caller the rule refuses, e.g. `Analytics only`.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "op": {
               "type": "string",
@@ -262,6 +295,13 @@
             "expr": {
               "type": "string"
             },
+            "message": {
+              "description": "Shown in reports and to a caller the rule refuses, e.g. `Analytics only`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "op": {
               "type": "string",
               "const": "transform"
@@ -286,6 +326,13 @@
             },
             "on_fail": {
               "$ref": "#/$defs/GuaranteeOnFail"
+            },
+            "message": {
+              "description": "Shown in reports and to a caller the rule refuses, e.g. `Analytics only`.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "op": {
               "type": "string",
@@ -321,6 +368,13 @@
               "default": {}
             },
             "unless": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message": {
+              "description": "Shown in reports and to a caller the rule refuses, e.g. `Analytics only`.",
               "type": [
                 "string",
                 "null"

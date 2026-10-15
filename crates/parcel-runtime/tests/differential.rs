@@ -213,6 +213,9 @@ rules:
   - {id: n_double, op: assert, expr: "row.score * 2.0 > 1.0", on_fail: report}
   - {id: n_conv, op: assert, expr: "double(row.n) < row.score", on_fail: report}
   - {id: n_int, op: assert, expr: "int(row.score) == 0", on_fail: report}
+  - {id: p_double, op: assert, expr: "row.score > -1 && row.score * 2 < 101", on_fail: report}
+  - {id: p_uint, op: assert, expr: "row.u > 5 && row.u in [1, 7, 9]", on_fail: report}
+  - {id: p_list, op: assert, expr: "row.score in [0, 0.5, 3.75]", on_fail: report}
   - {id: n_str, op: assert, expr: "string(row.n) == '42'", on_fail: report}
   - {id: t_year, op: assert, expr: "row.at.getFullYear() == 2024", on_fail: report}
   - {id: t_month, op: assert, expr: "row.at.getMonth() == 1", on_fail: report}
@@ -232,7 +235,7 @@ rules:
   # transforms
   - {id: x_mask, op: transform, column: name, expr: "ctx.tenant == 'acme' ? row.name : hash_sha256(row.name)"}
   - {id: x_redact, op: transform, column: phone, expr: "redact(row.phone)"}
-  - {id: x_score, op: transform, column: score, expr: "row.score * 100.0"}
+  - {id: x_score, op: transform, column: score, expr: "ctx.clearance > 3 ? row.score * 100 : 0"}
   # a number exposed as text: in clear for cleared callers, partly masked for others
   - {id: x_retype, op: transform, column: n, expr: "ctx.clearance >= 2 ? string(row.n) : partial(string(row.n), 2)"}
   # null for callers without the classification

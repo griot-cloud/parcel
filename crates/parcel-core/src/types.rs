@@ -112,9 +112,7 @@ impl Type {
             }
             DataType::Dictionary(_, value) => Type::from_arrow(value)?,
             other => {
-                return Err(format!(
-                    "Arrow type {other} is not supported by rules in parcel v0"
-                ));
+                return Err(format!("type {other} not supported in rules"));
             }
         })
     }
@@ -275,7 +273,71 @@ pub fn parse_type_name(s: &str) -> Result<DataType, String> {
         "timestamp" => DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
         "duration" => DataType::Duration(TimeUnit::Microsecond),
         "date32" | "date" => DataType::Date32,
-        _ => return Err(format!("unknown type '{s}'")),
+        _ => return Err(format!("unknown type `{s}`")),
+    })
+}
+
+/// The type names `expose` accepts most often, for messages.
+pub const COMMON_TYPE_NAMES: &str =
+    "int64, float64, utf8 (or string), bool, timestamp, decimal(p,s), list<T>";
+
+/// What someone coming from SQL, Python or JSON Schema most likely meant by an unknown type name.
+pub fn suggest_type_name(s: &str) -> Option<&'static str> {
+    let t = s.trim().to_ascii_lowercase();
+    Some(match t.as_str() {
+        "int" | "integer" | "long" | "bigint" | "number" | "i64" => "int64",
+        "smallint" | "short" | "i16" => "int16",
+        "i32" | "int4" => "int32",
+        "tinyint" | "i8" => "int8",
+        "float" | "real" | "numeric" | "f64" | "float8" | "double precision" => "float64",
+        "f32" | "float4" => "float32",
+        "str" | "text" | "varchar" | "char" | "character varying" | "object" => "utf8",
+        "boolean" | "bit" => "bool",
+        "datetime" | "timestamptz" | "datetime64" | "time" => "timestamp",
+        "date" | "date32" => "date32",
+        "decimal" | "money" => "decimal(18,2)",
+        "array" | "list" => "list<utf8>",
+        "blob" | "bytea" | "varbinary" => "binary",
+        "interval" | "timedelta" => "duration",
+        _ => return None,
+    })
+}
+
+/// The name `expose` would use for an Arrow type, when there is one.
+pub fn type_name_of(dt: &DataType) -> Option<String> {
+    let unit = |u: &TimeUnit| match u {
+        TimeUnit::Second => "s",
+        TimeUnit::Millisecond => "ms",
+        TimeUnit::Microsecond => "us",
+        TimeUnit::Nanosecond => "ns",
+    };
+    Some(match dt {
+        DataType::Boolean => "bool".into(),
+        DataType::Int8 => "int8".into(),
+        DataType::Int16 => "int16".into(),
+        DataType::Int32 => "int32".into(),
+        DataType::Int64 => "int64".into(),
+        DataType::UInt8 => "uint8".into(),
+        DataType::UInt16 => "uint16".into(),
+        DataType::UInt32 => "uint32".into(),
+        DataType::UInt64 => "uint64".into(),
+        DataType::Float32 => "float32".into(),
+        DataType::Float64 => "float64".into(),
+        DataType::Utf8 | DataType::Utf8View => "utf8".into(),
+        DataType::LargeUtf8 => "large_utf8".into(),
+        DataType::Binary | DataType::BinaryView => "binary".into(),
+        DataType::Date32 => "date32".into(),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => "timestamp".into(),
+        DataType::Timestamp(u, _) => format!("timestamp[{}]", unit(u)),
+        DataType::Duration(TimeUnit::Microsecond) => "duration".into(),
+        DataType::Duration(u) => format!("duration[{}]", unit(u)),
+        DataType::Decimal128(p, s) => format!("decimal({p},{s})"),
+        DataType::List(f) => format!("list<{}>", type_name_of(f.data_type())?),
+        DataType::FixedSizeList(f, n) if f.data_type() == &DataType::Float32 => {
+            format!("fixed_size_list<float32, {n}>")
+        }
+        DataType::Dictionary(_, v) => type_name_of(v)?,
+        _ => return None,
     })
 }
 

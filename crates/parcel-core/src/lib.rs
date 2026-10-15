@@ -33,12 +33,15 @@ pub mod document;
 pub mod hash;
 pub mod inherit;
 pub mod ir;
+pub mod lint;
 pub mod odcs;
 pub mod registry;
 pub mod residency;
+pub mod structure;
 pub mod translate;
 pub mod types;
 pub mod udfs;
+pub mod version;
 
 pub use check::{
     CheckedContract, CheckedExpr, CheckedRule, NoiseAt, ShapeOp, check_contract, contract_hash,
@@ -50,3 +53,4 @@ pub use diag::{Code, Diagnostic};
 pub use document::ContractDoc;
 pub use registry::Registry;
 pub use residency::Residency;
+pub use version::Version;

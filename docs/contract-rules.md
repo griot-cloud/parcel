@@ -18,6 +18,7 @@ An order with `supplier_id: globex` passes this rule when the caller's organizat
 | `id` | `supplier_orders` is the rule's unique name. |
 | `op` | `admit` specifies a rule that selects which rows are allowed. |
 | `expr` | The condition compares the order's supplier with the caller's organization. `==` means “equals”. |
+| `message` | Optional text shown with the rule in `parcel check` output, e.g. `Own orders only`. |
 
 Other rule types have additional fields, such as `on_fail` for the action taken when a quality check fails.
 
@@ -94,7 +95,7 @@ rules:
     on_fail: drop
 ```
 
-An amount of `120` passes. An amount of `0`, `-5`, or a missing amount fails. `on_fail` specifies the response:
+An amount of `120` passes. An amount of `0`, `-5`, or a missing amount fails. `on_fail` is required and specifies the response:
 
 | `on_fail` | Behavior |
 | --- | --- |

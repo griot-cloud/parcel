@@ -6,7 +6,7 @@
 
 ```yaml
 contract: purchasing/orders
-version: 1
+version: 1.0.0
 binding:
   parquet: data/orders/
 ```
@@ -17,7 +17,7 @@ binding:
 
 ```yaml
 contract: finance/invoices
-version: 2
+version: 2.0.0
 binding:
   iceberg: finance.invoices
 ```

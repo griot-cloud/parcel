@@ -17,7 +17,7 @@ The [CompiledBytes](rust-artifacts.md#compiledbytes) trait provides `to_bytes` a
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `name` | `String` | Contract name. |
-| `version` | `u32` | Contract revision. |
+| `version` | `Version` | Semantic version (`parcel_core::Version`). |
 | `contract_hash` | `String` | Hash of the contract definition. |
 | `compilation_hash` | `String` | Hash of this compilation. |
 | `owner` | `Option<String>` | Resolved owner identifier. |
@@ -79,6 +79,7 @@ The [CompiledBytes](rust-artifacts.md#compiledbytes) trait provides `to_bytes` a
 | `tier` | `Tier` | Evaluation category. |
 | `reason` | `String` | Explanation of the category. |
 | `cel` | `Option<String>` | Canonical CEL expression, when present. |
+| `message` | `Option<String>` | The rule's `message`, when the contract gives one. |
 
 | `Tier` variant | Meaning |
 | --- | --- |

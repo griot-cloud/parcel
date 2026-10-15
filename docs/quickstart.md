@@ -63,6 +63,14 @@ The `binding` declares a Parquet location for the orders. For this check, `--dat
 
 These profiles mock `ctx` for the check: `id` identifies the caller, `tenant` identifies their organization, and `purpose` states why they need access.
 
+## Validate the contract
+
+```bash
+parcel validate orders.yaml --schema orders.csv
+```
+
+`validate` checks that the contract is correct and compiles, without evaluating any data. `--schema orders.csv` supplies the column names and types; the rules read `supplier_id`, which the contract does not expose, so its type must come from the data. If something is wrong, each problem is listed with its line and what to change. `parcel lint orders.yaml --schema orders.csv` also points out rules that are legal but probably not what you meant.
+
 ## Check the contract
 
 ```bash

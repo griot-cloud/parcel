@@ -1,6 +1,6 @@
 # Compiler: `parcel-core`
 
-The crate re-exports `ContractDoc`, `Registry`, `check_contract`, `compile`, `compile_with`, `Compilation` and `Diagnostic` at its root. The snippets use DataFusion's Arrow `Schema`.
+The crate re-exports `ContractDoc`, `Registry`, `check_contract`, `compile`, `compile_with`, `Compilation`, `Diagnostic` and `Version` at its root. The snippets use DataFusion's Arrow `Schema`.
 
 | Type reference | Contents |
 | --- | --- |
@@ -8,6 +8,7 @@ The crate re-exports `ContractDoc`, `Registry`, `check_contract`, `compile`, `co
 | [Function registry](rust-registry.md) | `Registry`, entries, manifests, signatures, and pins. |
 | [Compilation results](rust-compilation.md) | `Compilation`, `CompiledContract`, validation and write plans. |
 | [Diagnostics](rust-diagnostics.md) | Error codes, fields, and constructors. |
+| [Lints](rust-lint.md) | Warnings and notes for contracts that compile. |
 
 ## `check_contract`
 
@@ -83,4 +84,5 @@ rust-checked
 rust-registry
 rust-compilation
 rust-diagnostics
+rust-lint
 ```

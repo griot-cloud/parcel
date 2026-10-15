@@ -2817,11 +2817,14 @@ checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 
 [[package]]
 name = "parcel-cli"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
+ "anstream",
+ "anstyle",
  "chrono",
  "clap",
  "datafusion",
+ "futures",
  "libc",
  "parcel-core",
  "parcel-runtime",
@@ -2833,7 +2836,7 @@ dependencies = [
 
 [[package]]
 name = "parcel-core"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "cel",
  "chrono",
@@ -2847,6 +2850,7 @@ dependencies = [
  "rand",
  "regex-syntax",
  "schemars 1.2.2",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2856,7 +2860,7 @@ dependencies = [
 
 [[package]]
 name = "parcel-runtime"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "cel",
  "chrono",
@@ -2882,7 +2886,7 @@ dependencies = [
 
 [[package]]
 name = "parcel-udf"
-version = "0.0.3"
+version = "0.0.4"
 
 [[package]]
 name = "parking_lot"
