@@ -3,3 +3,4 @@ examples/*/data/
 examples/*/_functions/
 examples/*/target/
 docs/_build/
+.DS_Store
