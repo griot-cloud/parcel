@@ -9,6 +9,12 @@ trap 'rm -rf "$out"' EXIT
 
 echo "== suppliers (documentation quickstart)"
 cd "$here/suppliers"
+"$P" validate orders.yaml --schema orders.csv >/dev/null
+# Without data the types come from expose, and supplier_orders reads the hidden supplier_id.
+if "$P" validate orders.yaml >/dev/null 2>&1; then
+  echo "orders.yaml should not validate without data: supplier_id is not exposed" >&2; exit 1
+fi
+"$P" lint orders.yaml --schema orders.csv --deny-warnings >/dev/null
 "$P" check orders.yaml --data orders.csv --caller acme.yaml --caller globex.yaml | tail -6
 "$P" compile orders.yaml --schema orders.csv -o "$out/supplier_orders.json" >/dev/null
 

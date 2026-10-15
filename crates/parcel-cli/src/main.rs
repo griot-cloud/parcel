@@ -4,30 +4,34 @@
 //! checks a contract against sample data in memory and writes the portable artifacts. It
 //! stores nothing and serves no queries.
 
-use std::collections::BTreeMap;
+mod check;
+mod progress;
+mod source;
+mod ui;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
-use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::{Schema, SchemaRef};
-use datafusion::datasource::MemTable;
-use datafusion::prelude::{CsvReadOptions, ParquetReadOptions, SessionContext};
-use parcel_core::compile::{ReportEntry, Tier};
+use datafusion::arrow::datatypes::SchemaRef;
+use parcel_core::compile::ReportEntry;
+use parcel_core::document::Source;
+use parcel_core::lint::{Lint, Severity};
 use parcel_core::registry::FunctionManifest;
-use parcel_core::{Compilation, ContractDoc, Registry};
+use parcel_core::{Compilation, Diagnostic, Registry};
 use parcel_runtime::Caller;
 use parcel_runtime::compiled::CompiledBytes;
-use parcel_runtime::differential::differential;
-use parcel_runtime::plan::{refusal, selectivity, validate};
 use serde_json::json;
+
+use source::{Contract, TypesFrom};
+use ui::{BOLD, CYAN, DIM, GREEN, OK, Out, Place, RED, WARN, YELLOW, paint};
 
 #[derive(Parser)]
 #[command(
     name = "parcel",
     version,
-    about = "Data contracts in CEL, compiled into query plans"
+    about = "Data contract compiler",
+    arg_required_else_help = true
 )]
 struct Cli {
     #[command(subcommand)]
@@ -36,27 +40,53 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Compile a contract against a data schema and print how each rule will execute.
-    Compile {
+    /// Check a contract compiles. No data needed.
+    Validate {
         contract: PathBuf,
-        /// A Parquet or CSV file whose schema the contract binds.
-        #[arg(long)]
-        schema: PathBuf,
-        /// Write the compiled contract (`Compilation::to_bytes`) here: what an
-        /// engine loads as given.
-        #[arg(long, short)]
-        out: Option<PathBuf>,
-        /// Print the compiled artifacts as JSON instead of the report.
+        #[command(flatten)]
+        schema: SchemaArg,
+        /// Print the result as JSON.
         #[arg(long)]
         json: bool,
-        /// Print the validation plan as SQL in this dialect instead of the report
-        /// (datafusion, duckdb, postgres, mysql, sqlite, bigquery, snowflake).
+        #[command(flatten)]
+        functions: Functions,
+        #[command(flatten)]
+        types: TypeHints,
+    },
+    /// Validate a contract and report likely mistakes.
+    Lint {
+        contract: PathBuf,
+        #[command(flatten)]
+        schema: SchemaArg,
+        /// Exit 1 on warnings.
+        #[arg(long)]
+        deny_warnings: bool,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        functions: Functions,
+        #[command(flatten)]
+        types: TypeHints,
+    },
+    /// Compile a contract.
+    Compile {
+        contract: PathBuf,
+        #[command(flatten)]
+        schema: SchemaArg,
+        /// Write the compiled contract to this file.
+        #[arg(long, short)]
+        out: Option<PathBuf>,
+        /// Print the compilation as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Print validation SQL: datafusion, duckdb, postgres, mysql, sqlite, bigquery, snowflake.
         #[arg(long, value_name = "DIALECT")]
         sql: Option<String>,
         /// The table the exported SQL reads.
         #[arg(long, default_value = "contract_data")]
         table: String,
-        /// Write the validation plan as a Substrait plan (protobuf) to this file.
+        /// Write the validation plan as Substrait to this file.
         #[cfg(feature = "substrait")]
         #[arg(long, value_name = "FILE")]
         substrait: Option<PathBuf>,
@@ -65,18 +95,16 @@ enum Command {
         #[command(flatten)]
         types: TypeHints,
     },
-    /// Check a contract against a sample of its data: the verdict, what each caller would
-    /// see, and the differential test between the CEL interpreter and DataFusion.
+    /// Check a contract against sample data and callers.
     Check {
         contract: PathBuf,
-        /// A Parquet or CSV file of sample data.
+        /// Sample data: CSV, Parquet, or a Parquet directory.
         #[arg(long)]
         data: PathBuf,
-        /// Callers to evaluate decide, admit and transform rules for (YAML files).
-        /// Defaults to one analyst.
+        /// Caller file (YAML or JSON). Repeatable.
         #[arg(long = "caller")]
         callers: Vec<PathBuf>,
-        /// Rows used for the differential test.
+        /// Rows for the differential test.
         #[arg(long, default_value_t = 1000)]
         sample: usize,
         /// Print the result as JSON.
@@ -87,23 +115,32 @@ enum Command {
         #[command(flatten)]
         types: TypeHints,
     },
-    /// Print the JSON Schema of contract documents (for editors and CI).
+    /// Print the contract JSON Schema.
     Schema,
-    /// Import a contract from another standard.
+    /// Convert a contract from another standard.
     Import {
         #[command(subcommand)]
         from: ImportCommand,
     },
-    /// Tenants' WebAssembly functions.
+    /// Custom WebAssembly functions.
     Function {
         #[command(subcommand)]
         action: FunctionCommand,
     },
 }
 
+/// Where column types come from: `--schema FILE`, else the binding's data, else `expose`.
+#[derive(Args, Clone, Default)]
+struct SchemaArg {
+    /// Column types from this CSV or Parquet file. Default: the binding's local Parquet
+    /// data, then `expose`.
+    #[arg(long, value_name = "FILE")]
+    schema: Option<PathBuf>,
+}
+
 /// The contract owner's WebAssembly functions: `--function MODULE.wasm=MANIFEST.yaml`.
 #[derive(Args, Clone, Default)]
-struct Functions {
+pub(crate) struct Functions {
     #[arg(long = "function", value_name = "MODULE=MANIFEST")]
     functions: Vec<String>,
 }
@@ -116,7 +153,7 @@ impl Functions {
             let (module, manifest) = f
                 .split_once('=')
                 .ok_or_else(|| format!("--function expects MODULE=MANIFEST, got `{f}`"))?;
-            let owner = owner.ok_or("a contract that calls tenant functions needs an `owner`")?;
+            let owner = owner.ok_or("--function needs `owner:` in the contract")?;
             let (bytes, m) = read_function(Path::new(module), Path::new(manifest))?;
             let entry = parcel_runtime::wasm::install(&bytes, &m, owner)?;
             registry.insert(entry);
@@ -135,7 +172,8 @@ fn read_function(module: &Path, manifest: &Path) -> Result<(Vec<u8>, FunctionMan
 
 /// Column types for CSV input, overriding inference: `--type msisdn=utf8`.
 #[derive(Args, Clone, Default)]
-struct TypeHints {
+pub struct TypeHints {
+    /// CSV column type, e.g. `--type zip=utf8`. Repeatable.
     #[arg(long = "type", value_name = "COLUMN=TYPE")]
     types: Vec<String>,
 }
@@ -148,10 +186,16 @@ impl TypeHints {
                 let (c, ty) = t
                     .split_once('=')
                     .ok_or_else(|| format!("--type expects COLUMN=TYPE, got `{t}`"))?;
-                Ok((
-                    c.trim().to_owned(),
-                    parcel_core::types::parse_type_name(ty)?,
-                ))
+                let parsed = parcel_core::types::parse_type_name(ty).map_err(|e| {
+                    match parcel_core::types::suggest_type_name(ty) {
+                        Some(s) => format!("--type {t}: {e}; did you mean `{s}`?"),
+                        None => format!(
+                            "--type {t}: {e}; common types: {}",
+                            parcel_core::types::COMMON_TYPE_NAMES
+                        ),
+                    }
+                })?;
+                Ok((c.trim().to_owned(), parsed))
             })
             .collect()
     }
@@ -159,13 +203,13 @@ impl TypeHints {
 
 #[derive(Subcommand)]
 enum ImportCommand {
-    /// An Open Data Contract Standard (ODCS v3) document.
+    /// Convert an ODCS v3 contract.
     Odcs {
         file: PathBuf,
-        /// The schema object to import when the document has several.
+        /// Schema object to import.
         #[arg(long)]
         object: Option<String>,
-        /// Write the parcel contract here instead of printing it.
+        /// Output file. Default: stdout.
         #[arg(long, short)]
         out: Option<PathBuf>,
     },
@@ -173,23 +217,28 @@ enum ImportCommand {
 
 #[derive(Subcommand)]
 enum FunctionCommand {
-    /// Load a module the way an engine will: imports nothing, speaks the ABI, passes a smoke
-    /// batch. Prints the hash contracts pin it by.
+    /// Verify a WebAssembly function and print its pin.
     Verify {
-        /// The compiled module (.wasm), built with parcel_udf::export!.
+        /// The .wasm module.
         module: PathBuf,
-        /// The function's manifest (YAML): name, version, signatures, deterministic, cost.
+        /// The manifest (YAML).
         #[arg(long)]
         manifest: PathBuf,
-        /// The tenant whose contracts will call it.
+        /// Owner whose contracts call it.
         #[arg(long)]
         owner: String,
     },
 }
 
-fn load_caller(p: &Path) -> Result<Caller, String> {
+pub(crate) fn load_caller(p: &Path) -> Result<Caller, String> {
     let text = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
-    yaml_serde::from_str(&text).map_err(|e| format!("{}: {e}", p.display()))
+    yaml_serde::from_str(&text).map_err(|e| {
+        format!(
+            "{}: {e}\n  help: required: id, tenant, purpose; optional: tier, clearance, \
+             classification, roles, now, other",
+            p.display()
+        )
+    })
 }
 
 #[tokio::main]
@@ -204,16 +253,49 @@ async fn main() -> ExitCode {
     match run(cli.command).await {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("error: {e}");
+            anstream::eprintln!("{} {e}", paint(RED, "error:"));
             ExitCode::from(2)
         }
     }
 }
 
-type R = Result<ExitCode, String>;
+pub(crate) type R = Result<ExitCode, String>;
+
+pub(crate) fn status(ok: bool) -> ExitCode {
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
+}
 
 async fn run(cmd: Command) -> R {
     match cmd {
+        Command::Validate {
+            contract,
+            schema,
+            json,
+            functions,
+            types,
+        } => cmd_validate(&contract, &schema, json, None, &functions, &types).await,
+        Command::Lint {
+            contract,
+            schema,
+            deny_warnings,
+            json,
+            functions,
+            types,
+        } => {
+            cmd_validate(
+                &contract,
+                &schema,
+                json,
+                Some(deny_warnings),
+                &functions,
+                &types,
+            )
+            .await
+        }
         Command::Compile {
             contract,
             schema,
@@ -226,26 +308,33 @@ async fn run(cmd: Command) -> R {
             #[cfg(feature = "substrait")]
             substrait,
         } => {
-            let (schema, _) = read_data(&schema, &types).await?;
-            let Some(compiled) = load_and_compile(&contract, &schema, &functions)? else {
+            let Some(ready) = ready(
+                &contract,
+                schema.schema.as_deref(),
+                &functions,
+                &types,
+                false,
+            )
+            .await?
+            else {
                 return Ok(ExitCode::from(1));
             };
-            let c = &compiled;
+            let c = &ready.compiled;
             #[cfg(feature = "substrait")]
             if let Some(path) = &substrait {
                 let (bytes, warnings) = parcel_runtime::export::validation_substrait(c, &table)?;
                 std::fs::write(path, bytes).map_err(|e| e.to_string())?;
                 for w in warnings {
-                    eprintln!("warning: {w}");
+                    anstream::eprintln!("{} {w}", paint(YELLOW, "warning:"));
                 }
-                eprintln!("wrote {}", path.display());
+                anstream::eprintln!("{} wrote {}", paint(GREEN, OK), path.display());
                 return Ok(ExitCode::SUCCESS);
             }
             if let Some(dialect) = &sql {
                 let export = parcel_runtime::export::validation_sql(c, dialect, &table)?;
                 println!("{};", export.sql);
                 for w in &export.warnings {
-                    eprintln!("warning: {w}");
+                    anstream::eprintln!("{} {w}", paint(YELLOW, "warning:"));
                 }
             } else if json {
                 println!(
@@ -253,17 +342,20 @@ async fn run(cmd: Command) -> R {
                     serde_json::to_string_pretty(c).map_err(|e| e.to_string())?
                 );
             } else {
-                print_report(
-                    &c.contract.name,
-                    c.contract.version,
-                    &c.contract.compilation_hash,
-                    &c.contract.report,
-                );
+                let mut o = Out::default();
+                report_header(&mut o, c, &ready.from);
+                ui::rules(&mut o, &c.contract.report);
+                o.print();
             }
             if let Some(out) = out {
                 std::fs::write(&out, c.to_bytes().map_err(|e| e.to_string())?)
                     .map_err(|e| e.to_string())?;
-                eprintln!("wrote {}", out.display());
+                anstream::eprintln!(
+                    "{} wrote {}  {}",
+                    paint(GREEN, OK),
+                    out.display(),
+                    paint(DIM, size(&out))
+                );
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -275,7 +367,7 @@ async fn run(cmd: Command) -> R {
             json,
             functions,
             types,
-        } => cmd_check(&contract, &data, &callers, sample, json, &functions, &types).await,
+        } => check::run(&contract, &data, &callers, sample, json, &functions, &types).await,
         Command::Import {
             from: ImportCommand::Odcs { file, object, out },
         } => {
@@ -292,7 +384,7 @@ async fn run(cmd: Command) -> R {
                 None => print!("{yaml}"),
             }
             for n in &imported.notes {
-                eprintln!("note: {n}");
+                anstream::eprintln!("{} {n}", paint(CYAN, "note:"));
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -314,13 +406,16 @@ async fn run(cmd: Command) -> R {
                     format!("({}) -> {}", args.join(", "), s.ret)
                 })
                 .collect();
-            println!(
-                "{} v{} for {owner}: verified\n  signatures {}\n  pinned as  {}",
-                entry.name,
-                entry.version,
-                sigs.join(", "),
-                entry.hash
-            );
+            let mut o = Out::default();
+            o.line(format!(
+                "{} {}",
+                paint(GREEN, OK),
+                paint(BOLD, format!("{} v{}", entry.name, entry.version))
+            ));
+            ui::field(&mut o, "owner", &owner);
+            ui::field(&mut o, "takes", sigs.join(", "));
+            ui::field(&mut o, "pinned", &entry.hash);
+            o.print();
             Ok(ExitCode::SUCCESS)
         }
         Command::Schema => {
@@ -334,254 +429,259 @@ async fn run(cmd: Command) -> R {
     }
 }
 
-/// Parse, load the owner's functions, and compile against `schema`. Parents named by
-/// `inherits` are found among the documents next to the contract. `None` after printing
-/// diagnostics.
-fn load_and_compile(
-    contract: &Path,
-    schema: &Schema,
-    functions: &Functions,
-) -> Result<Option<Compilation>, String> {
-    let source =
-        std::fs::read_to_string(contract).map_err(|e| format!("{}: {e}", contract.display()))?;
-    let doc = ContractDoc::parse(&source).map_err(|d| d.to_string())?;
-    let docs = sibling_documents(contract);
-    let registry = functions.load(doc.owner.as_deref())?;
-    let compilation =
-        match parcel_core::compile_with(&doc, schema, &registry, &|n| docs.get(n).cloned()) {
-            Ok(c) => c,
-            Err(diags) => {
-                for d in diags {
-                    eprintln!("{d}");
-                }
-                return Ok(None);
-            }
-        };
-    Ok(Some(compilation))
+/// A contract compiled against its column types, ready to report on or run.
+pub(crate) struct Ready {
+    pub contract: Contract,
+    pub schema: SchemaRef,
+    pub from: TypesFrom,
+    pub registry: Registry,
+    pub compiled: Compilation,
 }
 
-/// Every contract document next to `contract`, by name: where parents are found.
-fn sibling_documents(contract: &Path) -> BTreeMap<String, ContractDoc> {
-    let mut out = BTreeMap::new();
-    let dir = match contract.parent() {
-        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
-        _ => PathBuf::from("."),
+/// Read, type and compile a contract. `None` after printing its problems, to stderr, or to
+/// stdout when `to_stdout`.
+pub(crate) async fn ready(
+    path: &Path,
+    schema: Option<&Path>,
+    functions: &Functions,
+    types: &TypeHints,
+    to_stdout: bool,
+) -> Result<Option<Ready>, String> {
+    let emit = |o: Out| if to_stdout { o.print() } else { o.eprint() };
+    let file = path.display().to_string();
+    let contract = match Contract::read(path)? {
+        Ok(c) => c,
+        Err((source, diags)) => {
+            emit(problems(&file, &source, None, &diags));
+            return Ok(None);
+        }
     };
-    let Ok(rd) = std::fs::read_dir(&dir) else {
-        return out;
-    };
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.extension()
-            .is_some_and(|x| x == "yaml" || x == "yml" || x == "json")
-            && let Ok(text) = std::fs::read_to_string(&p)
-            && let Ok(doc) = ContractDoc::parse(&text)
-        {
-            out.entry(doc.contract.clone()).or_insert(doc);
+    let (schema, from) = source::schema_for(&contract, schema, types).await?;
+    let registry = functions.load(contract.doc.owner.as_deref())?;
+    match contract.compile(&schema, &registry) {
+        Ok(compiled) => Ok(Some(Ready {
+            contract,
+            schema,
+            from,
+            registry,
+            compiled,
+        })),
+        Err(mut diags) => {
+            source::locate(&mut diags, &contract.source, Some(&from));
+            emit(problems(&file, &contract.source, Some(&from), &diags));
+            Ok(None)
         }
     }
-    out
 }
 
-/// Read a Parquet or CSV file (or a directory of Parquet files) into batches.
-async fn read_data(
-    path: &Path,
-    hints: &TypeHints,
-) -> Result<(SchemaRef, Vec<RecordBatch>), String> {
-    let ctx = SessionContext::new();
-    let p = path.to_str().ok_or("path is not UTF-8")?;
-    let hints = hints.parse()?;
-    let df = if path.extension().is_some_and(|e| e == "csv") {
-        let inferred = ctx
-            .read_csv(p, CsvReadOptions::new())
-            .await
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        let fields: Vec<datafusion::arrow::datatypes::Field> = inferred
-            .schema()
-            .as_arrow()
-            .fields()
-            .iter()
-            .map(|f| match hints.iter().find(|(c, _)| c == f.name()) {
-                Some((_, t)) => f.as_ref().clone().with_data_type(t.clone()),
-                None => f.as_ref().clone(),
-            })
-            .collect();
-        let schema = Schema::new(fields);
-        ctx.read_csv(p, CsvReadOptions::new().schema(&schema)).await
-    } else {
-        ctx.read_parquet(p, ParquetReadOptions::default()).await
-    }
-    .map_err(|e| format!("{}: {e}", path.display()))?;
-    let schema: SchemaRef = std::sync::Arc::new(df.schema().as_arrow().clone());
-    let batches = df.collect().await.map_err(|e| e.to_string())?;
-    Ok((schema, batches))
-}
-
-fn print_report(name: &str, version: u32, hash: &str, report: &[ReportEntry]) {
-    println!("{name} v{version}  compilation {}", &hash[..16]);
-    println!();
-    println!(
-        "  {:<24} {:<10} {:<12} how it executes",
-        "rule", "op", "tier"
+/// Every problem, then a closing line saying how many and where the types came from.
+fn problems(file: &str, source: &str, from: Option<&TypesFrom>, diags: &[Diagnostic]) -> Out {
+    let mut o = Out::default();
+    let place = Place {
+        file,
+        source: Some(source),
+    };
+    ui::diagnostics(&mut o, &place, diags);
+    ui::verdict(
+        &mut o,
+        false,
+        format!("{file}  {}", ui::plural(diags.len(), "problem", "problems")),
     );
-    for r in report {
-        let tier = match r.tier {
-            Tier::PlanTime => "plan time",
-            Tier::Prunes => "prunes",
-            Tier::ScanFilter => "scan filter",
-            Tier::WriteTime => "write time",
-            Tier::Projection => "projection",
-            Tier::Operator => "operator",
-        };
-        println!("  {:<24} {:<10} {:<12} {}", r.rule, r.op, tier, r.reason);
+    if let Some(f) = from {
+        ui::field(&mut o, "types", f);
     }
+    o
 }
 
-async fn cmd_check(
-    contract: &Path,
-    data: &Path,
-    callers: &[PathBuf],
-    sample: usize,
+/// `validate`, or `lint` when `lint` is set (with whether warnings fail the command).
+async fn cmd_validate(
+    path: &Path,
+    schema: &SchemaArg,
     json: bool,
+    lint: Option<bool>,
     functions: &Functions,
     types: &TypeHints,
 ) -> R {
-    let (schema, batches) = read_data(data, types).await?;
-    let Some(compiled) = load_and_compile(contract, &schema, functions)? else {
+    if json {
+        return validate_json(path, schema, lint.is_some(), functions, types).await;
+    }
+    let Some(ready) = ready(path, schema.schema.as_deref(), functions, types, true).await? else {
         return Ok(ExitCode::from(1));
     };
-    let c = &compiled;
-    let cc = &c.contract;
-    let table = Arc::new(
-        MemTable::try_new(schema.clone(), vec![batches.clone()]).map_err(|e| e.to_string())?,
-    );
+    let file = path.display().to_string();
+    let cc = &ready.compiled.contract;
+    let mut o = Out::default();
 
-    let v = validate(c, c.validation.plan.clone(), table.clone())
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let callers: Vec<Caller> = if callers.is_empty() {
-        vec![Caller::new("check", "", "analytics")]
-    } else {
-        callers
-            .iter()
-            .map(|p| load_caller(p))
-            .collect::<Result<_, _>>()?
-    };
-    // What each caller would see: refused by a decision, or the rows its admits let through.
-    let mut seen = Vec::new();
-    for caller in &callers {
-        let who = format!("{}/{}", caller.tenant, caller.id);
-        let refused = refusal(cc, caller).map_err(|e| e.to_string())?;
-        let rows = match &refused {
-            Some(_) => None,
-            None => Some(
-                selectivity(c, table.clone(), caller)
-                    .await
-                    .map_err(|e| e.to_string())?,
+    let Some(deny_warnings) = lint else {
+        o.line(format!(
+            "{} {}",
+            paint(GREEN, OK),
+            paint(BOLD, format!("{} v{}", cc.name, cc.version))
+        ));
+        rule_summary(&mut o, &cc.report);
+        ui::field(
+            &mut o,
+            "columns",
+            format!(
+                "{}/{}",
+                cc.exposed_schema.fields().len(),
+                ready.schema.fields().len()
             ),
-        };
-        seen.push((who, refused, rows));
-    }
+        );
+        ui::field(&mut o, "types", &ready.from);
+        o.print();
+        return Ok(ExitCode::SUCCESS);
+    };
 
-    let mut rows = Vec::new();
-    let mut left = sample;
-    for b in &batches {
-        if left == 0 {
-            break;
-        }
-        let take = left.min(b.num_rows());
-        rows.push(b.slice(0, take));
-        left -= take;
-    }
-    let sample_batch =
-        datafusion::arrow::compute::concat_batches(&schema, &rows).map_err(|e| e.to_string())?;
-    let diff = differential(c, &sample_batch, &callers)
-        .await
-        .map_err(|e| e.to_string())?;
-    let ok = v.valid && diff.passed();
+    let lints = lints_for(&ready);
+    let place = Place {
+        file: &file,
+        source: Some(&ready.contract.source),
+    };
+    ui::lints(&mut o, &place, &lints);
+    let warnings = lints
+        .iter()
+        .filter(|l| l.severity == Severity::Warning)
+        .count();
+    let notes = lints.len() - warnings;
+    let summary = format!(
+        "{file}  {}  {}",
+        ui::plural(warnings, "warning", "warnings"),
+        ui::plural(notes, "note", "notes")
+    );
+    o.blank();
+    let mark = match (warnings, deny_warnings) {
+        (0, _) => paint(GREEN, OK),
+        (_, true) => paint(RED, ui::FAIL),
+        (_, false) => paint(YELLOW, WARN),
+    };
+    o.line(format!("{mark} {}", paint(BOLD, summary)));
+    ui::field(&mut o, "types", &ready.from);
+    o.print();
+    Ok(status(!(deny_warnings && warnings > 0)))
+}
 
-    if json {
-        let out = json!({
-            "contract": cc.name,
-            "version": cc.version,
-            "compilation_hash": cc.compilation_hash,
-            "report": cc.report,
-            "verdict": v,
-            "query_time_guarantees": c.validation.query_time_guarantees,
-            "callers": seen.iter().map(|(who, refused, rows)| json!({
-                "caller": who, "refused_by": refused, "rows": rows,
-            })).collect::<Vec<_>>(),
-            "differential": diff,
+/// The lints for a compiled contract, located in its source, with a note when the binding
+/// is not where it says.
+fn lints_for(ready: &Ready) -> Vec<Lint> {
+    let c = &ready.contract;
+    let mut lints = match c.checked(&ready.schema, &ready.registry) {
+        Ok(checked) => parcel_core::lint::lint(&c.doc, &checked),
+        Err(_) => Vec::new(),
+    };
+    if let (TypesFrom::Expose { why }, Some(Source::Parquet(loc))) =
+        (&ready.from, c.doc.binding.as_ref().map(|b| &b.source))
+        && why.contains("not found")
+    {
+        lints.push(Lint {
+            name: "binding-not-found",
+            severity: Severity::Note,
+            rule: None,
+            message: format!("binding `{loc}` not found"),
+            help: "paths are relative to the contract".into(),
+            line: None,
         });
+    }
+    let lines = c.lines();
+    for l in &mut lints {
+        l.line = match (&l.rule, l.name) {
+            (Some(r), "admit-reads-only-ctx" | "constant-rule" | "duplicate-condition") => {
+                lines.rule_expr(r)
+            }
+            (Some(r), _) => lines.rule(r),
+            (None, "unused-extension") => lines.top("extensions"),
+            (None, "open-access") => lines.top("rules").or_else(|| lines.top("contract")),
+            (None, "binding-not-found") => lines.top("binding"),
+            (None, _) => lines.top("contract"),
+        };
+    }
+    lints.sort_by_key(|l| (l.severity, l.line));
+    lints
+}
+
+async fn validate_json(
+    path: &Path,
+    schema: &SchemaArg,
+    lint: bool,
+    functions: &Functions,
+    types: &TypeHints,
+) -> R {
+    let file = path.display().to_string();
+    let print = |v: serde_json::Value| -> Result<(), String> {
         println!(
             "{}",
-            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+            serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?
         );
-        return Ok(if ok {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::from(1)
-        });
+        Ok(())
+    };
+    let contract = match Contract::read(path)? {
+        Ok(c) => c,
+        Err((_, diags)) => {
+            print(json!({"contract": file, "valid": false, "diagnostics": diags}))?;
+            return Ok(ExitCode::from(1));
+        }
+    };
+    let (schema, from) = source::schema_for(&contract, schema.schema.as_deref(), types).await?;
+    let registry = functions.load(contract.doc.owner.as_deref())?;
+    match contract.compile(&schema, &registry) {
+        Err(mut diags) => {
+            source::locate(&mut diags, &contract.source, Some(&from));
+            print(json!({
+                "contract": file, "valid": false, "types_from": from.to_string(), "diagnostics": diags,
+            }))?;
+            Ok(ExitCode::from(1))
+        }
+        Ok(compiled) => {
+            let ready = Ready {
+                contract,
+                schema,
+                from,
+                registry,
+                compiled,
+            };
+            let mut out = json!({
+                "contract": file,
+                "name": ready.compiled.contract.name,
+                "version": ready.compiled.contract.version,
+                "valid": true,
+                "types_from": ready.from.to_string(),
+                "diagnostics": [],
+            });
+            if lint {
+                out["lints"] = json!(lints_for(&ready));
+            }
+            print(out)?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
+}
 
-    print_report(&cc.name, cc.version, &cc.compilation_hash, &cc.report);
-    println!();
-    println!(
-        "verdict over {} rows: {}",
-        v.row_count,
-        if v.valid {
-            "VALID".to_owned()
-        } else {
-            format!("INVALID ({})", v.breached.join(", "))
-        }
-    );
-    for (id, fails) in &v.failures {
-        let rate = if v.row_count > 0 {
-            100.0 * (1.0 - *fails as f64 / v.row_count as f64)
-        } else {
-            100.0
-        };
-        println!("  assert    {id:<24} {rate:>7.2}% pass  ({fails} failing)");
-    }
-    for (id, ok) in &v.guarantees {
-        println!(
-            "  guarantee {id:<24} {}",
-            if *ok { "holds" } else { "FAILS" }
-        );
-    }
-    for g in &c.validation.query_time_guarantees {
-        println!("  guarantee {g:<24} decided per query (reads write time or ctx.now)");
-    }
-    println!();
-    for (who, refused, rows) in &seen {
-        match (refused, rows) {
-            (Some(rule), _) => println!("  caller {who:<20} refused by `{rule}`"),
-            (None, Some(n)) => println!("  caller {who:<20} sees {n} of {} rows", v.row_count),
-            (None, None) => {}
+/// `rules  5 · 2 decide, 3 assert`
+fn rule_summary(o: &mut Out, report: &[ReportEntry]) {
+    let mut by_op: Vec<(&str, usize)> = Vec::new();
+    for r in report {
+        match by_op.iter_mut().find(|(op, _)| *op == r.op) {
+            Some((_, n)) => *n += 1,
+            None => by_op.push((&r.op, 1)),
         }
     }
-    println!();
-    println!(
-        "differential test: {} evaluations over {} rows and {} caller(s): {}",
-        diff.evaluations,
-        diff.rows,
-        diff.callers,
-        if diff.passed() {
-            "interpreter and DataFusion agree".to_owned()
-        } else {
-            format!("{} MISMATCHES", diff.mismatches.len())
-        }
-    );
-    for m in diff.mismatches.iter().take(10) {
-        println!(
-            "  {} row {} ({}): cel {} vs datafusion {}",
-            m.rule, m.row, m.caller, m.reference, m.datafusion
-        );
+    let ops: Vec<String> = by_op.iter().map(|(op, n)| format!("{n} {op}")).collect();
+    ui::field(o, "rules", format!("{}  {}", report.len(), ops.join(", ")));
+}
+
+/// The contract's name, version and hash, and where its column types came from.
+fn report_header(o: &mut Out, c: &Compilation, from: &TypesFrom) {
+    let cc = &c.contract;
+    ui::title_line(o, &cc.name, cc.version, &cc.compilation_hash[..16]);
+    ui::field(o, "types", from);
+}
+
+/// A file's size: `4.9 KB`.
+fn size(p: &Path) -> String {
+    match std::fs::metadata(p).map(|m| m.len()) {
+        Ok(n) if n >= 1024 * 1024 => format!("{:.1} MB", n as f64 / (1024.0 * 1024.0)),
+        Ok(n) if n >= 1024 => format!("{:.1} KB", n as f64 / 1024.0),
+        Ok(n) => format!("{n} B"),
+        Err(_) => String::new(),
     }
-    Ok(if ok {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(1)
-    })
 }

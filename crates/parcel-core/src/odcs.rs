@@ -115,6 +115,7 @@ pub fn import(source: &str, object: Option<&str>) -> Result<Imported, String> {
                 id: format!("{id}_present"),
                 expr: format!("has(row.{col})"),
                 on_fail: AssertOnFail::Deny,
+                message: None,
             }));
         }
         if flag("unique") || flag("primaryKey") {
@@ -124,6 +125,7 @@ pub fn import(source: &str, object: Option<&str>) -> Result<Imported, String> {
                     "dataset.{col}.distinct_count == dataset.row_count - dataset.{col}.null_count"
                 ),
                 on_fail: GuaranteeOnFail::Annotate,
+                message: None,
             }));
         }
         for q in p

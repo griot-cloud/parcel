@@ -131,6 +131,9 @@ pub struct ReportEntry {
     pub reason: String,
     /// The rule in canonical CEL, when it has an expression.
     pub cel: Option<String>,
+    /// The rule's `message`, when the contract gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// The query-time artifact: fragments peQL splices into a caller's query (design 9.1).
@@ -383,7 +386,14 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
                     .into_iter()
                     .collect::<Vec<_>>()
                     .join(", ");
-                if prunable(&expr.expr) {
+                if cols.is_empty() {
+                    (
+                        "admit",
+                        Tier::PlanTime,
+                        "reads no row, so it keeps every row or none; a decide rule says so by name"
+                            .to_owned(),
+                    )
+                } else if prunable(&expr.expr) {
                     (
                         "admit",
                         Tier::Prunes,
@@ -532,6 +542,7 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
             }
         }
         report.push(ReportEntry {
+            message: c.messages.get(&id).cloned(),
             rule: id,
             op: op.into(),
             tier,

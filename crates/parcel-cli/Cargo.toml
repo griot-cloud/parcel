@@ -12,15 +12,18 @@ name = "parcel"
 path = "src/main.rs"
 
 [dependencies]
-parcel-core = { path = "../parcel-core", version = "0.0.3" }
-parcel-runtime = { path = "../parcel-runtime", version = "0.0.3" }
+parcel-core = { path = "../parcel-core", version = "0.0.4" }
+parcel-runtime = { path = "../parcel-runtime", version = "0.0.4" }
 datafusion = "55.1.0"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+anstream = "1.0.0"
+anstyle = "1.0.14"
 clap = { version = "4", features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true
 yaml_serde.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+futures = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

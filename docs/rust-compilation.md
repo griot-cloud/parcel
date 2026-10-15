@@ -79,6 +79,7 @@ The [CompiledBytes](rust-artifacts.md#compiledbytes) trait provides `to_bytes` a
 | `tier` | `Tier` | Evaluation category. |
 | `reason` | `String` | Explanation of the category. |
 | `cel` | `Option<String>` | Canonical CEL expression, when present. |
+| `message` | `Option<String>` | The rule's `message`, when the contract gives one. |
 
 | `Tier` variant | Meaning |
 | --- | --- |

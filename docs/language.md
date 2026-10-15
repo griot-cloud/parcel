@@ -14,7 +14,7 @@ The remaining sections specify expression syntax, supported types, and additiona
 
 ## Rule constraints
 
-Rule IDs must be unique and match `[a-z][a-z0-9_]*`. Conditions for `decide`, `admit`, `assert`, and `guarantee` must return a Boolean. A `transform` must return the type declared for its column in `expose`.
+Rule IDs must be unique and match `[a-z][a-z0-9_]*`. `assert` and `guarantee` rules require `on_fail`. Any rule may have a `message`: text shown with it in reports. Conditions for `decide`, `admit`, `assert`, and `guarantee` must return a Boolean. A `transform` must return the type declared for its column in `expose`.
 
 ## Shapes
 
@@ -49,6 +49,8 @@ parcel supports a checked subset of CEL. Unsupported syntax, types and operation
 | Timestamps | `getFullYear`, `getMonth`, `getDayOfMonth`, `getDayOfWeek`, `getDayOfYear`, `getHours`, `getMinutes`, `getSeconds`. |
 | Presence | `has(row.column)`. |
 | Lists | `exists`, `all`, `filter`, `map`. |
+
+A whole-number literal beside a double is read as a double, so `row.cost > 0` works when `cost` is `float64`; beside an unsigned column it is read as unsigned. Only literals are converted: to compare an integer column with a double, convert it explicitly, as in `double(row.quantity) * 1.5`.
 
 Exact decimals support up to 18 digits, no division, and one scale per comparison.
 

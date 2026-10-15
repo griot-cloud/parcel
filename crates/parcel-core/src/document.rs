@@ -260,6 +260,18 @@ impl Rule {
         }
     }
 
+    /// The author's description of the rule, if any.
+    pub fn message(&self) -> Option<&str> {
+        match self {
+            Rule::Decide(r) => r.message.as_deref(),
+            Rule::Admit(r) => r.message.as_deref(),
+            Rule::Assert(r) => r.message.as_deref(),
+            Rule::Transform(r) => r.message.as_deref(),
+            Rule::Guarantee(r) => r.message.as_deref(),
+            Rule::Shape(r) => r.message.as_deref(),
+        }
+    }
+
     pub fn op_name(&self) -> &'static str {
         match self {
             Rule::Decide(_) => "decide",
@@ -277,6 +289,9 @@ impl Rule {
 pub struct DecideRule {
     pub id: String,
     pub expr: String,
+    /// Shown in reports and to a caller the rule refuses, e.g. `Analytics only`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -284,6 +299,9 @@ pub struct DecideRule {
 pub struct AdmitRule {
     pub id: String,
     pub expr: String,
+    /// Shown in reports and to a caller the rule refuses, e.g. `Analytics only`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -300,6 +318,9 @@ pub struct AssertRule {
     pub id: String,
     pub expr: String,
     pub on_fail: AssertOnFail,
+    /// Shown in reports and to a caller the rule refuses, e.g. `Analytics only`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -308,6 +329,9 @@ pub struct TransformRule {
     pub id: String,
     pub column: String,
     pub expr: String,
+    /// Shown in reports and to a caller the rule refuses, e.g. `Analytics only`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -323,6 +347,9 @@ pub struct GuaranteeRule {
     pub id: String,
     pub expr: String,
     pub on_fail: GuaranteeOnFail,
+    /// Shown in reports and to a caller the rule refuses, e.g. `Analytics only`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -336,6 +363,9 @@ pub struct ShapeRule {
     pub params: serde_json::Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unless: Option<String>,
+    /// Shown in reports and to a caller the rule refuses, e.g. `Analytics only`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// The JSON Schema of a contract document, for editors and CI.
@@ -349,10 +379,26 @@ pub fn json_schema() -> Value {
 }
 
 impl ContractDoc {
-    /// Parse a contract from YAML or JSON (JSON is valid YAML).
+    /// Parse a contract from YAML or JSON (JSON is valid YAML). The first problem, if any;
+    /// [`ContractDoc::parse_all`] gives them all.
     pub fn parse(source: &str) -> Result<ContractDoc, Diagnostic> {
-        yaml_serde::from_str(source)
-            .map_err(|e| Diagnostic::new(Code::Document, None, e.to_string()))
+        Self::parse_all(source).map_err(|mut d| d.remove(0))
+    }
+
+    /// Parse a contract, or report every structural problem in it, each located and with a
+    /// suggested fix where parcel has one.
+    pub fn parse_all(source: &str) -> Result<ContractDoc, Vec<Diagnostic>> {
+        crate::structure::check(source)?;
+        yaml_serde::from_str(source).map_err(|e| {
+            let text = e.to_string();
+            let message = match text.find(" at line ") {
+                Some(i) => text[..i].to_owned(),
+                None => text,
+            };
+            let mut d = Diagnostic::new(Code::Document, None, message);
+            d.line = e.location().map(|l| l.line());
+            vec![d]
+        })
     }
 }
 

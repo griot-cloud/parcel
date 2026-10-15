@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use cel::common::ast::{CallExpr, ComprehensionExpr, Expr, IdedExpr, LiteralValue, operators};
 use cel::parser::Parser;
 
-use crate::diag::{Code, Diagnostic};
+use crate::diag::{Code, Diagnostic, did_you_mean};
 use crate::ir::*;
 use crate::registry::Registry;
 use crate::types::Type;
@@ -37,11 +37,15 @@ pub struct OtherTypes {
 /// Parse and check one CEL expression.
 pub fn check_expr(env: &Env, rule: &str, source: &str) -> Result<TExpr, Vec<Diagnostic>> {
     let ast = Parser::new().parse(source).map_err(|errs| {
-        vec![Diagnostic::new(
+        let d = Diagnostic::new(
             Code::Parse,
             Some(rule),
             format!("cannot parse `{source}`: {errs}"),
-        )]
+        );
+        vec![match parse_hint(source) {
+            Some(h) => d.with_help(h),
+            None => d,
+        }]
     })?;
     let mut c = Checker {
         env,
@@ -77,6 +81,19 @@ impl Checker<'_, '_> {
     fn err(&mut self, code: Code, msg: impl Into<String>) -> R {
         self.diags.push(Diagnostic::new(code, Some(self.rule), msg));
         None
+    }
+
+    fn err_help(&mut self, code: Code, msg: impl Into<String>, help: Option<String>) -> R {
+        let d = Diagnostic::new(code, Some(self.rule), msg);
+        self.diags.push(match help {
+            Some(h) => d.with_help(h),
+            None => d,
+        });
+        None
+    }
+
+    fn columns(&self) -> impl Iterator<Item = &str> {
+        self.env.columns.keys().map(String::as_str)
     }
 
     fn expr(&mut self, e: &IdedExpr) -> R {
@@ -133,12 +150,24 @@ impl Checker<'_, '_> {
                     "`{name}` is a namespace; refer to one of its fields, e.g. `{name}.<field>`"
                 ),
             ),
-            _ => self.err(
-                Code::UnknownIdentifier,
-                format!(
-                    "unknown identifier `{name}`; variables live under `row.`, `ctx.` or `dataset.`"
-                ),
-            ),
+            _ => {
+                let help = if self.env.columns.contains_key(name) {
+                    Some(format!("use `row.{name}`"))
+                } else if CtxField::from_name(name).is_some() {
+                    Some(format!("use `ctx.{name}`"))
+                } else {
+                    did_you_mean(name, self.columns())
+                        .map(|c| format!("did you mean `row.{c}`?"))
+                        .or_else(|| {
+                            Some("use `row.<column>`, `ctx.<field>` or `dataset.<field>`".into())
+                        })
+                };
+                self.err_help(
+                    Code::UnknownIdentifier,
+                    format!("unknown name `{name}`"),
+                    help,
+                )
+            }
         }
     }
 
@@ -167,7 +196,7 @@ impl Checker<'_, '_> {
             return self.err(
                 Code::OutsideProfile,
                 format!(
-                    "`{}` is a list element; struct fields are not in parcel v0",
+                    "`{}` is a list element; struct fields are not supported",
                     p[0]
                 ),
             );
@@ -205,19 +234,25 @@ impl Checker<'_, '_> {
             ["row", col] => self.row_var(col),
             ["row", col, ..] => self.err(
                 Code::OutsideProfile,
-                format!(
-                    "`row.{col}` is not a struct; nested fields are not supported in parcel v0"
-                ),
+                format!("`row.{col}` is not a struct; nested fields are not supported"),
             ),
             ["ctx", field] => match CtxField::from_name(field) {
                 Some(f) => Some(TExpr::new(ExprKind::Var(Var::Ctx(f)), f.ty())),
-                None => self.err(
-                    Code::UnknownField,
-                    format!(
-                        "`ctx.{field}` is not a caller field; known fields: {}",
-                        CtxField::ALL.map(CtxField::name).join(", ")
-                    ),
-                ),
+                None => {
+                    let names = CtxField::ALL.map(CtxField::name);
+                    let help = match did_you_mean(field, names) {
+                        Some(n) => format!("did you mean `ctx.{n}`?"),
+                        None => format!(
+                            "fields: {}; declare others under `extensions.ctx`, read as `ctx.other.<field>`",
+                            names.join(", ")
+                        ),
+                    };
+                    self.err_help(
+                        Code::UnknownField,
+                        format!("`ctx.{field}` is not a caller field"),
+                        Some(help),
+                    )
+                }
             },
             ["dataset", rest @ ..] => self.dataset_var(rest),
             [root, ..] => self.ident(root),
@@ -231,11 +266,22 @@ impl Checker<'_, '_> {
                 ExprKind::Var(Var::Row(col.to_owned())),
                 ty.clone(),
             )),
-            Some(Err(why)) => self.err(Code::UnreadableColumn, format!("`row.{col}`: {why}")),
-            None => self.err(
-                Code::UnknownColumn,
-                format!("`row.{col}`: the bound schema has no column `{col}`"),
+            Some(Err(why)) => self.err_help(
+                Code::UnreadableColumn,
+                format!("`row.{col}`: {why}"),
+                Some(format!(
+                    "expose it without reading it, or convert it (CSV: `--type {col}=<type>`)"
+                )),
             ),
+            None => {
+                let help =
+                    did_you_mean(col, self.columns()).map(|c| format!("did you mean `row.{c}`?"));
+                self.err_help(
+                    Code::UnknownColumn,
+                    format!("`row.{col}`: the data has no column `{col}`"),
+                    help,
+                )
+            }
         }
     }
 
@@ -351,13 +397,22 @@ impl Checker<'_, '_> {
             .iter()
             .map(|x| self.expr(x))
             .collect::<Option<_>>()?;
-        let Some(first) = items.first() else {
+        if items.is_empty() {
             return self.err(
                 Code::OutsideProfile,
                 "empty list literals have no type; parcel needs at least one element",
             );
+        }
+        // `[1, 2.5]` is a list of doubles: whole-number literals take the wider type.
+        let items: Vec<TExpr> = if items.iter().any(|i| i.ty == Type::Double) {
+            items
+                .into_iter()
+                .map(|i| promote(i, &Type::Double).unwrap_or_else(|i| i))
+                .collect()
+        } else {
+            items
         };
-        let elem = first.ty.clone();
+        let elem = items[0].ty.clone();
         if let Some(bad) = items.iter().find(|i| i.ty != elem) {
             return self.err(
                 Code::TypeMismatch,
@@ -451,7 +506,7 @@ impl Checker<'_, '_> {
                         let b2 = decimal_literal(&b, *sc).unwrap_or(b);
                         (b2, d)
                     }
-                    _ => (b, d),
+                    _ => unify(b, d),
                 };
                 if b.ty != d.ty {
                     return self.err(
@@ -490,6 +545,28 @@ impl Checker<'_, '_> {
         if matches!(a.ty, Decimal(_)) || matches!(b.ty, Decimal(_)) {
             return self.decimal_binary(op, a, b);
         }
+        // `row.cost > 0` against a double column: the literal 0 is read as 0.0.
+        let (a, b) = match op {
+            BinOp::And | BinOp::Or => (a, b),
+            BinOp::In => {
+                let b = match (&b.kind, &b.ty) {
+                    (ExprKind::List(items), List(elem)) if **elem != a.ty => {
+                        let items: Vec<TExpr> = items
+                            .iter()
+                            .map(|i| promote(i.clone(), &a.ty).unwrap_or_else(|i| i))
+                            .collect();
+                        if items.iter().all(|i| i.ty == a.ty) {
+                            TExpr::new(ExprKind::List(items), Type::list(a.ty.clone()))
+                        } else {
+                            b
+                        }
+                    }
+                    _ => b,
+                };
+                (a, b)
+            }
+            _ => unify(a, b),
+        };
         let ty = match op {
             BinOp::And | BinOp::Or => {
                 self.expect(&a, &Bool, "operand of a logical operator")?;
@@ -498,7 +575,7 @@ impl Checker<'_, '_> {
             }
             BinOp::Eq | BinOp::Ne => {
                 if a.ty != b.ty {
-                    return self.err(Code::TypeMismatch, mismatch("compare", &a.ty, &b.ty));
+                    return self.mismatch("compare", &a, &b);
                 }
                 if matches!(a.ty, List(_) | Embedding(_)) {
                     return self.err(
@@ -510,7 +587,7 @@ impl Checker<'_, '_> {
             }
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 if a.ty != b.ty {
-                    return self.err(Code::TypeMismatch, mismatch("compare", &a.ty, &b.ty));
+                    return self.mismatch("compare", &a, &b);
                 }
                 if !a.ty.is_ordered() && a.ty != Bool {
                     return self.err(
@@ -528,9 +605,10 @@ impl Checker<'_, '_> {
                     );
                 };
                 if **elem != a.ty {
-                    return self.err(
+                    return self.err_help(
                         Code::TypeMismatch,
                         format!("`in` tests a {} against a list<{elem}>", a.ty),
+                        Some(format!("list items must be {}", a.ty)),
                     );
                 }
                 Bool
@@ -548,32 +626,23 @@ impl Checker<'_, '_> {
                     );
                 }
                 _ => {
-                    return self.err(
-                        Code::TypeMismatch,
-                        mismatch(
-                            if op == BinOp::Add { "add" } else { "subtract" },
-                            &a.ty,
-                            &b.ty,
-                        ),
+                    return self.mismatch(
+                        if op == BinOp::Add { "add" } else { "subtract" },
+                        &a,
+                        &b,
                     );
                 }
             },
             BinOp::Mul | BinOp::Div => match (&a.ty, &b.ty) {
                 (Int, Int) | (Uint, Uint) | (Double, Double) => a.ty.clone(),
                 _ => {
-                    return self.err(
-                        Code::TypeMismatch,
-                        mismatch("multiply or divide", &a.ty, &b.ty),
-                    );
+                    return self.mismatch("multiply or divide", &a, &b);
                 }
             },
             BinOp::Mod => match (&a.ty, &b.ty) {
                 (Int, Int) | (Uint, Uint) => a.ty.clone(),
                 _ => {
-                    return self.err(
-                        Code::TypeMismatch,
-                        mismatch("take the modulus of", &a.ty, &b.ty),
-                    );
+                    return self.mismatch("take the modulus of", &a, &b);
                 }
             },
         };
@@ -660,15 +729,29 @@ impl Checker<'_, '_> {
             );
         }
         if method {
-            return self.err(
+            let help = did_you_mean(name, PROFILE_NAMES).map(|n| format!("did you mean `.{n}()`?"));
+            return self.err_help(
                 Code::UnknownFunction,
                 format!("`.{name}()` is not a method in the parcel profile"),
+                help,
             );
         }
         let Some(entry) = self.env.registry.get(name) else {
-            return self.err(
+            let known: Vec<&str> = self
+                .env
+                .registry
+                .entries()
+                .map(|e| e.name.as_str())
+                .chain(PROFILE_NAMES)
+                .collect();
+            let help = match did_you_mean(name, known) {
+                Some(n) => format!("did you mean `{n}`?"),
+                None => "load custom functions with --function MODULE=MANIFEST".into(),
+            };
+            return self.err_help(
                 Code::UnknownFunction,
                 format!("`{name}` is not in the function registry"),
+                Some(help),
             );
         };
         let Some(sig) = entry
@@ -980,40 +1063,142 @@ fn exact_decimal(e: &TExpr) -> Option<Lit> {
     }
 }
 
+const PROFILE_NAMES: [&str; 19] = [
+    "size",
+    "startsWith",
+    "endsWith",
+    "contains",
+    "matches",
+    "int",
+    "uint",
+    "double",
+    "string",
+    "timestamp",
+    "duration",
+    "getFullYear",
+    "getMonth",
+    "getDayOfMonth",
+    "getDayOfWeek",
+    "getDayOfYear",
+    "getHours",
+    "getMinutes",
+    "getSeconds",
+];
+
 fn is_profile_name(name: &str) -> bool {
-    matches!(
-        name,
-        "size"
-            | "startsWith"
-            | "endsWith"
-            | "contains"
-            | "matches"
-            | "int"
-            | "uint"
-            | "double"
-            | "string"
-            | "timestamp"
-            | "duration"
-            | "getFullYear"
-            | "getMonth"
-            | "getDayOfMonth"
-            | "getDayOfWeek"
-            | "getDayOfYear"
-            | "getHours"
-            | "getMinutes"
-            | "getSeconds"
-    )
+    PROFILE_NAMES.contains(&name)
 }
 
-fn mismatch(verb: &str, a: &Type, b: &Type) -> String {
-    let hint = match (a, b) {
-        (Type::Int, Type::Double) | (Type::Double, Type::Int) => {
-            "; convert one side with double() or int()"
-        }
-        (Type::Int, Type::Uint) | (Type::Uint, Type::Int) => {
-            "; convert one side with int() or uint()"
-        }
-        _ => "",
+/// Integers above this are not exact as doubles, so their literals are not promoted.
+const EXACT_IN_DOUBLE: i64 = 1 << 53;
+
+/// A whole-number literal read as `to`, when that is exact: `0` as `0.0` beside a double, or
+/// as `0u` beside a uint. Anything else comes back unchanged as the error.
+pub(crate) fn promote(e: TExpr, to: &Type) -> Result<TExpr, TExpr> {
+    let int = |x: &TExpr| match x.kind {
+        ExprKind::Lit(Lit::Int(i)) => Some(i),
+        _ => None,
     };
-    format!("cannot {verb} {a} and {b}{hint}")
+    match to {
+        Type::Double => {
+            let v = match &e.kind {
+                ExprKind::Lit(Lit::Int(i)) => Some(*i),
+                ExprKind::Neg(x) => int(x).map(|i| -i),
+                _ => None,
+            };
+            match v {
+                Some(i) if i.abs() <= EXACT_IN_DOUBLE => Ok(TExpr::new(
+                    ExprKind::Lit(Lit::Double(i as f64)),
+                    Type::Double,
+                )),
+                _ => Err(e),
+            }
+        }
+        Type::Uint => match int(&e) {
+            Some(i) if i >= 0 => Ok(TExpr::new(ExprKind::Lit(Lit::Uint(i as u64)), Type::Uint)),
+            _ => Err(e),
+        },
+        _ => Err(e),
+    }
+}
+
+/// Bring a whole-number literal on either side to the other side's numeric type.
+fn unify(a: TExpr, b: TExpr) -> (TExpr, TExpr) {
+    if a.ty == b.ty {
+        return (a, b);
+    }
+    match promote(b, &a.ty) {
+        Ok(b) => (a, b),
+        Err(b) => match promote(a, &b.ty) {
+            Ok(a) => (a, b),
+            Err(a) => (a, b),
+        },
+    }
+}
+
+impl Checker<'_, '_> {
+    /// A type mismatch between two operands, with the conversion that fixes it.
+    fn mismatch(&mut self, verb: &str, a: &TExpr, b: &TExpr) -> R {
+        use crate::cel_print::{Style, print};
+        let show = |x: &TExpr| print(x, Style::Canonical);
+        let wrap = |f: &str, x: &TExpr| format!("`{f}({})`", show(x));
+        let help = match (&a.ty, &b.ty) {
+            (Type::Int, Type::Double) => Some(format!("use {}", wrap("double", a))),
+            (Type::Double, Type::Int) => Some(format!("use {}", wrap("double", b))),
+            (Type::Int, Type::Uint) => Some(format!("use {}", wrap("int", b))),
+            (Type::Uint, Type::Int) => Some(format!("use {}", wrap("int", a))),
+            (Type::String, Type::Int | Type::Double) => Some(format!(
+                "`{}` is a string; quote the value or use string()",
+                show(a)
+            )),
+            (Type::Int | Type::Double, Type::String) => {
+                Some(format!("`{}` is a string; use int() or double()", show(b)))
+            }
+            (Type::Timestamp, Type::String) | (Type::String, Type::Timestamp) => {
+                Some("use `timestamp('2026-01-31T00:00:00Z')`".into())
+            }
+            _ => None,
+        };
+        self.err_help(
+            Code::TypeMismatch,
+            format!("cannot {verb} {} and {}", a.ty, b.ty),
+            help,
+        )
+    }
+}
+
+/// Common mistakes from SQL and other languages, as a hint for a parse error.
+fn parse_hint(source: &str) -> Option<String> {
+    let padded = format!(" {source} ");
+    let words = |w: &str| {
+        padded.contains(&format!(" {w} ")) || padded.contains(&format!(" {} ", w.to_uppercase()))
+    };
+    if words("and") || words("or") {
+        return Some("use `&&` and `||`".into());
+    }
+    if words("not") {
+        return Some("use `!`, e.g. `!has(row.email)`".into());
+    }
+    if words("is") || padded.contains(" NULL ") || padded.contains(" null ") {
+        return Some("use `has(row.<column>)`".into());
+    }
+    if words("like") {
+        return Some("use startsWith, contains or matches".into());
+    }
+    let bytes = source.as_bytes();
+    let single_eq = bytes.iter().enumerate().any(|(i, &c)| {
+        c == b'='
+            && !matches!(bytes.get(i + 1), Some(b'='))
+            && !matches!(
+                i.checked_sub(1).map(|j| bytes[j]),
+                Some(b'=' | b'!' | b'<' | b'>')
+            )
+    });
+    if single_eq {
+        return Some("use `==`".into());
+    }
+    if source.contains('\u{201c}') || source.contains('\u{2018}') {
+        return Some("use straight quotes".into());
+    }
+    None
 }

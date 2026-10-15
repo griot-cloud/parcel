@@ -20,6 +20,14 @@ println!("{} v{}", doc.contract, doc.version);
 
 The example is intended inside a function returning `Result`; both file errors and `Diagnostic` implement standard error reporting.
 
+## `ContractDoc::parse_all`
+
+```rust
+pub fn parse_all(source: &str) -> Result<ContractDoc, Vec<Diagnostic>>;
+```
+
+Returns every structural problem at once instead of the first: unknown or misspelled fields, a missing space after a colon, a rule without its `op` or `on_fail`, and values of the wrong kind. Each diagnostic carries the line it is about and, where parcel has one, a suggested fix in `help`. `parse` returns the first of these.
+
 ## Public fields
 
 | Field | Type | Meaning |
@@ -61,7 +69,7 @@ The example is intended inside a function returning `Result`; both file errors a
 | `Guarantee` | `GuaranteeRule { id: String, expr: String, on_fail: GuaranteeOnFail }` |
 | `Shape` | `ShapeRule { id: String, operator: String, column: Option<String>, params: serde_json::Map<String, serde_json::Value>, unless: Option<String> }` |
 
-`AssertOnFail` variants are `Drop`, `Deny`, and `Report`. `GuaranteeOnFail` variants are `Deny` and `Annotate`.
+Every rule type also has `message: Option<String>`, and `Rule::message()` returns it. `AssertOnFail` variants are `Drop`, `Deny`, and `Report`. `GuaranteeOnFail` variants are `Deny` and `Annotate`.
 
 ```rust
 impl Rule {
