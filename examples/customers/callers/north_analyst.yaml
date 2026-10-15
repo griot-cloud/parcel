@@ -1,0 +1,5 @@
+id: north-analyst
+tenant: our_company
+purpose: analytics
+tier: regional
+other: {region: North}

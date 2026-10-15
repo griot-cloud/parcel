@@ -1,0 +1,5 @@
+id: finance
+tenant: our_company
+purpose: finance
+tier: internal
+other: {region: HQ}

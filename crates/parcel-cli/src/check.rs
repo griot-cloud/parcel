@@ -56,15 +56,27 @@ enum CallerRun {
     },
 }
 
+/// What `parcel check` does besides checking: the differential sample size, where to write
+/// each caller's rows, and whether to print JSON.
+pub struct Options<'a> {
+    pub sample: usize,
+    pub rows: Option<&'a Path>,
+    pub json: bool,
+}
+
 pub async fn run(
     contract: &Path,
     data: &Path,
     caller_files: &[PathBuf],
-    sample: usize,
-    json: bool,
+    options: Options<'_>,
     functions: &Functions,
     types: &TypeHints,
 ) -> R {
+    let Options {
+        sample,
+        rows: rows_dir,
+        json,
+    } = options;
     let Some(ready) = ready(contract, Some(data), functions, types, false).await? else {
         return Ok(ExitCode::from(1));
     };
@@ -278,6 +290,15 @@ pub async fn run(
     }
     if let Some(b) = board {
         b.stop().await;
+    }
+    if let Some(dir) = rows_dir {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for (caller, r) in callers.iter().zip(&results) {
+            if matches!(r, Done::Reads { .. }) {
+                let file = dir.join(format!("{}.parquet", file_name(&caller.id)));
+                write_rows(&c, &scan, caller, &file).await?;
+            }
+        }
     }
     let ok = v.valid && diff.passed();
 
@@ -585,6 +606,66 @@ async fn join_all<T>(jobs: Vec<(String, Job<T>)>) -> Result<Vec<(String, T)>, St
         out.push((id, join(j).await?));
     }
     Ok(out)
+}
+
+/// A caller id as a file name.
+fn file_name(id: &str) -> String {
+    let s: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if s.is_empty() { "caller".into() } else { s }
+}
+
+/// The rows `caller` receives, as parcel's runtime computes them, written as Parquet: the
+/// reference an engine target's results are compared with.
+async fn write_rows(
+    c: &Compilation,
+    scan: &LogicalPlan,
+    caller: &Caller,
+    file: &Path,
+) -> Result<(), String> {
+    let cc = &c.contract;
+    let mut filters: Vec<Expr> = cc.admits.iter().map(|(_, e)| e.clone()).collect();
+    filters.extend(
+        cc.flags
+            .iter()
+            .filter(|f| f.on_fail == AssertOnFail::Drop)
+            .map(|f| f.expr.clone()),
+    );
+    let mut b = LogicalPlanBuilder::from(scan.clone());
+    if let Some(f) = filters.into_iter().reduce(Expr::and) {
+        b = b.filter(f).map_err(|e| e.to_string())?;
+    }
+    let plan = b
+        .project(
+            cc.projection
+                .iter()
+                .map(|(name, e)| e.clone().alias(name))
+                .collect::<Vec<_>>(),
+        )
+        .and_then(|b| b.build())
+        .map_err(|e| e.to_string())?;
+    let params = param_values(cc, caller).map_err(|e| e.to_string())?;
+    let plan = bind(plan, &params)?;
+    session()
+        .execute_logical_plan(plan)
+        .await
+        .map_err(|e| e.to_string())?
+        .write_parquet(
+            &file.display().to_string(),
+            datafusion::dataframe::DataFrameWriteOptions::new().with_single_file_output(true),
+            None,
+        )
+        .await
+        .map_err(|e| format!("{}: {e}", file.display()))?;
+    Ok(())
 }
 
 /// `==== globex/wanjiru ====…`, 60 wide.

@@ -1,0 +1,31 @@
+# A second contract over the same customer data: segment-level fields for marketing, no
+# personal data. It shares the table with sales/customers and neither affects the other.
+contract: sales/customer_segments
+version: 1.0.0
+owner: our_company
+
+binding:
+  parquet: data/customers/
+  partitioned_by: [region]
+
+expose:
+  - {name: customer_segment, type: utf8}
+  - {name: customer_age, type: int64}
+  - {name: customer_country, type: utf8}
+  - {name: region, type: utf8}
+
+rules:
+  - id: marketing_only
+    op: decide
+    expr: ctx.purpose == "marketing"
+    message: Segments are for marketing
+
+  - id: adults
+    op: admit
+    expr: row.customer_age >= 18
+    message: Adults only
+
+  - id: plausible_age
+    op: assert
+    expr: row.customer_age >= 0 && row.customer_age <= 120
+    on_fail: drop

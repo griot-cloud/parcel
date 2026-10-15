@@ -1,0 +1,5 @@
+id: hq-analyst
+tenant: our_company
+purpose: analytics
+tier: internal
+other: {region: HQ}

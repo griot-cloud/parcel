@@ -7,6 +7,7 @@ Contract syntax, command options, and the Rust API.
 
 language
 cli
+engines
 crates
 odcs
 functions

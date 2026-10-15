@@ -1,0 +1,18 @@
+[package]
+name = "parcel-sql"
+description = "A parcel contract as a governed SQL query, for engines parcel does not embed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+parcel-core = { path = "../parcel-core", version = "0.0.4" }
+cel.workspace = true
+datafusion = { version = "55.1.0", default-features = true }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+yaml_serde.workspace = true

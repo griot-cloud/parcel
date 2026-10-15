@@ -1,0 +1,5 @@
+id: acme-analytics
+tenant: acme_partners
+purpose: analytics
+tier: partner
+other: {region: South}

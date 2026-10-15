@@ -8,6 +8,7 @@ The Rust API provides contract parsing, compilation, evaluation, and export. Str
 | [Runtime: `parcel-runtime`](rust-runtime.md) | `Caller`, validation, caller decisions, shape rules and differential testing. |
 | [Artifacts and exports](rust-artifacts.md) | Compiled bytes, function pins, SQL and Substrait export, WebAssembly loading. |
 | [WebAssembly functions](functions.md) | Writing and verifying a custom function with `parcel-udf`. |
+| [Engines](engines.md) | `parcel-sql`, `parcel-duckdb`, `parcel-postgres`, `parcel-spark`: a compiled contract as a governed query in each engine. |
 
 `parcel-core` parses and compiles contracts. `parcel-runtime` evaluates the compiled results and provides export and loading functions.
 

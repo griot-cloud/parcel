@@ -172,6 +172,7 @@ parcel check CONTRACT --data DATA [OPTIONS]
 | `--data DATA` | Required CSV file, Parquet file, or Parquet directory to check. |
 | `--caller FILE` | Mock caller profile. Repeat to test multiple callers. |
 | `--sample N` | Maximum rows in the evaluator comparison; default `1000`. |
+| `--rows DIR` | Write the rows each caller receives to `DIR/<caller id>.parquet`. |
 | `--json` | Print the report as JSON. Redirect it to a file to save it. |
 | `--type COLUMN=TYPE` | Override a CSV column's inferred type. Repeat for multiple columns. |
 | `--function MODULE=MANIFEST` | Load a custom WebAssembly function with its manifest. Repeat for multiple functions. |

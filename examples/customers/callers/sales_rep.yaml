@@ -1,0 +1,5 @@
+id: sales-rep
+tenant: our_company
+purpose: sales
+tier: internal
+other: {region: HQ}

@@ -1,0 +1,22 @@
+[package]
+name = "parcel-duckdb-extension"
+description = "A DuckDB extension that resolves parcel contracts by name, on the fly"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "parcel_duckdb"
+crate-type = ["cdylib"]
+
+[dependencies]
+duckdb = { version = "=1.10506.0", features = ["loadable-extension"] }
+libduckdb-sys = { version = "=1.10506.0", features = ["loadable-extension"] }
+parcel-core = { path = "../parcel-core", version = "0.0.4" }
+parcel-runtime = { path = "../parcel-runtime", version = "0.0.4", default-features = false }
+parcel-sql = { path = "../parcel-sql", version = "0.0.4" }
+parcel-duckdb = { path = "../parcel-duckdb", version = "0.0.4" }
+serde_json.workspace = true

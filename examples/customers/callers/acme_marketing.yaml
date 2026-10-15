@@ -1,0 +1,5 @@
+id: acme-marketing
+tenant: acme_partners
+purpose: marketing
+tier: partner
+other: {region: South}
