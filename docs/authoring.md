@@ -19,7 +19,7 @@ The contract has four sections: contract identity, binding, expose, and rules.
 
 ```yaml
 contract: purchasing/orders
-version: 1
+version: 1.0.0
 owner: acme
 ```
 
@@ -66,7 +66,7 @@ rules:
 
 ```yaml
 contract: purchasing/orders
-version: 1
+version: 1.0.0
 owner: acme
 binding:
   parquet: data/orders/

@@ -140,7 +140,7 @@ pub struct ReportEntry {
 #[derive(Clone, Debug, Serialize)]
 pub struct CompiledContract {
     pub name: String,
-    pub version: u32,
+    pub version: crate::Version,
     pub contract_hash: String,
     pub compilation_hash: String,
     /// The tenant the contract belongs to. Engines use it for visibility and to decide
@@ -650,7 +650,7 @@ fn assemble(c: &CheckedContract, schema: &Schema) -> AResult<Compilation> {
     Ok(Compilation {
         contract: CompiledContract {
             name: c.name.clone(),
-            version: c.version,
+            version: c.version.clone(),
             contract_hash: c.contract_hash.clone(),
             compilation_hash,
             owner: c.owner.clone(),

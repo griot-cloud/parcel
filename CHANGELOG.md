@@ -16,6 +16,10 @@ then tags it. See [CONTRIBUTING](docs/contributing.md#releasing).
   (`decide`, `admit`, `transform`, `shape`) and each quality rule over the caller's rows, with
   pass rates and the commonest failing values. A refused caller shows the rule, its condition
   and the caller's value. All counts run concurrently, each with a progress bar on a terminal.
+- `version` is a semantic version: `1.0.0`, `2.1.0-beta.1`. A whole number N reads as N.0.0;
+  a decimal such as `1.10` is refused with the fix (`1.10.0`). `parcel_core::Version` replaces
+  `u32` on documents and compiled contracts, and serialises as a string, so contract hashes
+  change. ODCS import keeps the full version.
 - Rules take an optional `message`, shown in `check` output and kept in the compiled report
   (`ReportEntry::message`). Contracts without it hash as before.
 - Every structural problem in a document is reported at once, with its line and a fix.

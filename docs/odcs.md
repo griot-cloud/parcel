@@ -10,6 +10,7 @@ For documents with multiple schema objects, `--object NAME` selects one. Without
 
 | ODCS field | parcel result |
 | --- | --- |
+| `version` | `version`, as a semantic version. |
 | Schema properties | Exposed columns and types. |
 | `required` or `primaryKey` | Presence assertions with `on_fail: deny`. |
 | `unique` | A distinct-count guarantee with `on_fail: annotate`. |

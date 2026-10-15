@@ -96,17 +96,53 @@ pub fn check(source: &str) -> Result<Value, Vec<Diagnostic>> {
     match top.get("version") {
         None => d.push(
             Diagnostic::new(Code::Document, None, "missing `version`")
-                .with_help("add `version: 1`")
+                .with_help("add `version: 1.0.0`")
                 .at(lines.first()),
         ),
-        Some(v) if v.as_u64().is_some_and(|n| n <= u32::MAX as u64) => {}
+        Some(Value::Number(n)) if n.as_u64().is_some() => {}
+        Some(Value::String(v)) => {
+            if v.parse::<crate::Version>().is_err() {
+                d.push(
+                    Diagnostic::new(
+                        Code::Document,
+                        None,
+                        format!("`version: {v}` is not a version"),
+                    )
+                    .with_help(crate::Version::fix_for(v))
+                    .at(lines.top("version")),
+                );
+            }
+        }
+        Some(Value::Number(_)) => {
+            // YAML has already read `1.10` as 1.1, so show what was written.
+            let at = lines.top("version");
+            let raw = at
+                .and_then(|l| lines.text(l))
+                .and_then(|t| t.split_once(':'))
+                .map(|(_, v)| v.trim().to_owned())
+                .unwrap_or_default();
+            let fix = if raw.matches('.').count() == 1 && !raw.starts_with('-') {
+                format!("write `version: {raw}.0`")
+            } else {
+                "write MAJOR.MINOR.PATCH, e.g. `version: 1.0.0`".to_owned()
+            };
+            d.push(
+                Diagnostic::new(
+                    Code::Document,
+                    None,
+                    format!("`version: {raw}` is a decimal, not a version"),
+                )
+                .with_help(fix)
+                .at(at),
+            );
+        }
         Some(v) => d.push(
             Diagnostic::new(
                 Code::Document,
                 None,
-                format!("`version` must be a whole number, not {v}"),
+                format!("`version` must be MAJOR.MINOR.PATCH, not {v}"),
             )
-            .with_help("e.g. `version: 2`")
+            .with_help("e.g. `version: 1.0.0`")
             .at(lines.top("version")),
         ),
     }
@@ -634,6 +670,22 @@ fn starts_key(line: &str, key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn versions() {
+        for ok in ["1", "1.0.0", "2.1.0-beta.1", "\"3.0.0\""] {
+            check(&format!(
+                "contract: t/x\nversion: {ok}\nbinding: {{parquet: x/}}\n"
+            ))
+            .unwrap_or_else(|d| panic!("{ok}: {d:#?}"));
+        }
+        let d = problems("contract: t/x\nversion: 1.10\nbinding: {parquet: x/}\n");
+        assert_eq!(d[0].message, "`version: 1.10` is a decimal, not a version");
+        assert_eq!(d[0].help.as_deref(), Some("write `version: 1.10.0`"));
+        assert_eq!(d[0].line, Some(2));
+        let d = problems("contract: t/x\nversion: v1.0.0\nbinding: {parquet: x/}\n");
+        assert_eq!(d[0].help.as_deref(), Some("drop the `v`: `1.0.0`"));
+    }
 
     fn problems(src: &str) -> Vec<Diagnostic> {
         check(src).expect_err("expected problems")

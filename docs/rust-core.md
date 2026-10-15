@@ -1,6 +1,6 @@
 # Compiler: `parcel-core`
 
-The crate re-exports `ContractDoc`, `Registry`, `check_contract`, `compile`, `compile_with`, `Compilation` and `Diagnostic` at its root. The snippets use DataFusion's Arrow `Schema`.
+The crate re-exports `ContractDoc`, `Registry`, `check_contract`, `compile`, `compile_with`, `Compilation`, `Diagnostic` and `Version` at its root. The snippets use DataFusion's Arrow `Schema`.
 
 | Type reference | Contents |
 | --- | --- |

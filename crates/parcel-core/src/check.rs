@@ -128,7 +128,7 @@ impl CheckedRule {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CheckedContract {
     pub name: String,
-    pub version: u32,
+    pub version: crate::Version,
     /// Hash of the document's canonical form (design section 12).
     pub contract_hash: String,
     /// The tenant the contract belongs to, after inheritance.
@@ -530,7 +530,7 @@ pub fn check_layers(
     }
     Ok(CheckedContract {
         name: doc.contract.clone(),
-        version: doc.version,
+        version: doc.version.clone(),
         contract_hash: contract_hash(doc),
         owner: doc.owner.clone(),
         binding: binding.clone(),

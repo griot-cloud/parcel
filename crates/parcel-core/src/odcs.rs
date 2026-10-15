@@ -9,7 +9,7 @@
 //! | `required: true` or `primaryKey: true` | `assert has(row.x)`, `on_fail: deny` |
 //! | `unique: true` | `guarantee` distinct count equals non-null count, `annotate` |
 //! | `quality` with `engine: parcel` | its `implementation` as parcel rules, verbatim |
-//! | `name`, `domain`, `version` | `contract` (`domain/name`), `version` (major) |
+//! | `name`, `domain`, `version` | `contract` (`domain/name`), `version` |
 //!
 //! Everything else in the document stays authoritative in ODCS (descriptions, owners,
 //! SLAs, servers); the import notes say what was not carried over.
@@ -78,13 +78,17 @@ pub fn import(source: &str, object: Option<&str>) -> Result<Imported, String> {
         }
     };
     let version = match v.get("version") {
-        Some(Value::String(s)) => s
-            .split('.')
-            .next()
-            .and_then(|m| m.parse().ok())
-            .unwrap_or(1),
-        Some(Value::Number(n)) => n.as_u64().unwrap_or(1) as u32,
-        _ => 1,
+        Some(Value::String(s)) => match s.parse() {
+            Ok(v) => v,
+            Err(why) => {
+                notes.push(format!("version: {why}; using 1.0.0"));
+                crate::Version::new(1, 0, 0)
+            }
+        },
+        Some(Value::Number(n)) if n.as_u64().is_some() => {
+            crate::Version::new(n.as_u64().unwrap_or(1), 0, 0)
+        }
+        _ => crate::Version::new(1, 0, 0),
     };
 
     let mut expose = Vec::new();

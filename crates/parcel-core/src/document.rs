@@ -14,7 +14,8 @@ use crate::diag::{Code, Diagnostic};
 pub struct ContractDoc {
     /// Contract name, e.g. `sales/orders`.
     pub contract: String,
-    pub version: u32,
+    /// A semantic version, e.g. `1.0.0`; a whole number N means N.0.0.
+    pub version: crate::Version,
     /// The tenant that owns the contract: its registered functions are callable here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,

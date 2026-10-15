@@ -33,7 +33,7 @@ Returns every structural problem at once instead of the first: unknown or misspe
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `contract` | `String` | Contract name. |
-| `version` | `u32` | Contract revision. |
+| `version` | `Version` | Semantic version (`parcel_core::Version`). |
 | `owner` | `Option<String>` | Owner of the data; selects the owner-specific functions available to the contract. |
 | `inherits` | `Option<String>` | Parent contract name. |
 | `binding` | `Option<Binding>` | Data location; may be inherited. |

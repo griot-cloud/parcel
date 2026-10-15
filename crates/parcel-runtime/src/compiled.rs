@@ -94,7 +94,7 @@ struct Form {
 #[serde(deny_unknown_fields)]
 struct ContractForm {
     name: String,
-    version: u32,
+    version: parcel_core::Version,
     contract_hash: String,
     compilation_hash: String,
     owner: Option<String>,
@@ -186,7 +186,7 @@ impl Form {
             parcel_version: PARCEL_VERSION.into(),
             contract: ContractForm {
                 name: cc.name.clone(),
-                version: cc.version,
+                version: cc.version.clone(),
                 contract_hash: cc.contract_hash.clone(),
                 compilation_hash: cc.compilation_hash.clone(),
                 owner: cc.owner.clone(),

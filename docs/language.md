@@ -105,7 +105,7 @@ A child contract names its parent with `inherits`. The CLI resolves parent contr
 
 ```yaml
 contract: purchasing/large_orders
-version: 1
+version: 1.0.0
 owner: acme
 inherits: purchasing/orders
 rules:

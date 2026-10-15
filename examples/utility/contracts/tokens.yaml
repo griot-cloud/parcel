@@ -2,7 +2,7 @@
 # Prepaid token sales. The utility (tenant `kplc`) wrote its own meter logic in Rust,
 # compiled to WebAssembly (examples/udf-meter-serial), and calls it from this contract.
 contract: kplc/tokens
-version: 1
+version: 1.0.0
 owner: kplc
 
 binding:

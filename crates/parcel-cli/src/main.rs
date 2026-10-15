@@ -672,7 +672,7 @@ fn rule_summary(o: &mut Out, report: &[ReportEntry]) {
 /// The contract's name, version and hash, and where its column types came from.
 fn report_header(o: &mut Out, c: &Compilation, from: &TypesFrom) {
     let cc = &c.contract;
-    ui::title_line(o, &cc.name, cc.version, &cc.compilation_hash[..16]);
+    ui::title_line(o, &cc.name, &cc.version, &cc.compilation_hash[..16]);
     ui::field(o, "types", from);
 }
 

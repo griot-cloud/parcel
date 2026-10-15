@@ -17,7 +17,7 @@ The [CompiledBytes](rust-artifacts.md#compiledbytes) trait provides `to_bytes` a
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `name` | `String` | Contract name. |
-| `version` | `u32` | Contract revision. |
+| `version` | `Version` | Semantic version (`parcel_core::Version`). |
 | `contract_hash` | `String` | Hash of the contract definition. |
 | `compilation_hash` | `String` | Hash of this compilation. |
 | `owner` | `Option<String>` | Resolved owner identifier. |

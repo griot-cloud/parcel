@@ -282,7 +282,7 @@ pub fn verdict(out: &mut Out, ok: bool, text: impl Display) {
 }
 
 /// `name v1` and the compilation hash, as the first line of a report.
-pub fn title_line(out: &mut Out, name: &str, version: u32, right: &str) {
+pub fn title_line(out: &mut Out, name: &str, version: &parcel_core::Version, right: &str) {
     out.line(format!(
         "{} {}  {}",
         paint(BOLD, name),

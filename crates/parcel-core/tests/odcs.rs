@@ -11,7 +11,7 @@ fn imports_and_compiles() {
     let imported = odcs::import(PAYMENTS, None).unwrap();
     let doc = &imported.doc;
     assert_eq!(doc.contract, "seller/seller_payments_v1");
-    assert_eq!(doc.version, 1);
+    assert_eq!(doc.version, "1.1.0".parse().unwrap());
     assert_eq!(doc.owner.as_deref(), Some("climatequantuminc"));
     let expose: Vec<(&str, &str)> = doc
         .expose
