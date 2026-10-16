@@ -14,9 +14,11 @@ then tags it. See [CONTRIBUTING](docs/contributing.md#releasing).
     resolves names with a replacement scan; caller fields are variables (`parcel_tenant`).
   - Spark: a Java extension (`crates/parcel-spark/jvm`) resolves names during analysis; caller
     fields are `spark.parcel.caller.<field>`.
-  - Crates `parcel-sql`, `parcel-duckdb`, `parcel-spark`; parcel-core and
-    parcel-runtime are unchanged.
+  - A contract file that changes is read again on the next query.
+  - Crates `parcel-sql`, `parcel-duckdb`, `parcel-spark`; parcel-core and parcel-runtime are
+    unchanged.
 - `parcel check --rows DIR` writes the rows each caller receives, as Parquet.
+- `-o FILE` creates the file's directory when it is missing.
 - Reading a Parquet directory partitioned as `key=value/` now includes the partition columns.
 - `examples/customers`: a contract over customer master data with 17 rules and seven callers,
   and `tests/engines/run.py`, which checks each engine's rows against parcel's for every caller.

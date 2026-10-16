@@ -18,12 +18,26 @@ FROM <the data the binding names>
 WHERE <decide rules> AND <admit rules> AND <assert rules with on_fail: drop>
 ```
 
-The row expressions are the compiled ones, written in the engine's SQL, so the engine evaluates what parcel evaluates. Each engine resolves the name at query time and plans the query like any other: filters reach the scan, and partition and file pruning apply.
+The row expressions are the compiled ones, written in the engine's SQL, so the engine evaluates what parcel evaluates. Each engine resolves the name when a query names it, and plans the result like any other query. Caller fields are constants by then, so a rule such as `region == ctx.other.region` reaches the scan and prunes partitions and row groups.
 
 | Engine | Loads | Resolves the name with | Caller from |
 | --- | --- | --- | --- |
 | DuckDB | `.parcel` files | the `parcel` extension's replacement scan | variables: `SET VARIABLE parcel_tenant = '...'` |
-| Spark | a `.spark.json` file per contract | the `parcel` Spark extension's analyser rule | configuration: `spark.parcel.caller.<field>` |
+| Spark | `.spark.json` files | the `parcel` Spark extension's analyser rule | configuration: `spark.parcel.caller.tenant` |
+
+A contract file that changes is read again on the next query, in both engines.
+
+### Caller fields
+
+Each `ctx` field the contract reads is one variable in DuckDB and one configuration key in Spark:
+
+| Field | DuckDB | Spark |
+| --- | --- | --- |
+| `ctx.tenant` | `parcel_tenant` | `spark.parcel.caller.tenant` |
+| `ctx.other.region` | `parcel_other_region` | `spark.parcel.caller.other.region` |
+| `ctx.roles` | a list: `['analyst', 'auditor']` | comma-separated: `analyst,auditor` |
+
+A field that is not set is null, and a rule that reads it is false. `ctx.now` is the time of the query unless it is set.
 
 ## DuckDB
 
@@ -40,30 +54,28 @@ SET VARIABLE parcel_purpose = 'analytics';
 SET VARIABLE parcel_tier = 'internal';
 SELECT * FROM "sales/customers@1.0.0";
 SELECT * FROM 'contracts/customers.parcel';
-SELECT * FROM parcel_contracts();
 ```
 
-The extension finds contracts in the directories `PARCEL_CONTRACTS` lists (separated by `:`), else in `./contracts` and the working directory. A contract file that changes is read again on the next query. `parcel_contracts()` lists the contracts it can resolve.
+The extension looks for contracts in the directories `PARCEL_CONTRACTS` lists, separated by `:`. Without it, it looks in `./contracts` and the working directory. `SELECT * FROM parcel_contracts()` lists each contract file it finds, with its name, version and compilation hash, and an `error` for a file it cannot read.
 
-Each caller field is a variable named `parcel_<field>`: `parcel_tenant`, `parcel_purpose`, `parcel_other_region` for `ctx.other.region`. An unset variable is null, so a rule that reads it is false.
-
-A `.parcel` reads the data its binding names: `read_parquet('data/customers/**/*.parquet')`, relative to DuckDB's working directory. To read another relation, such as a DuckDB table, write the DuckDB artifact instead:
+A `.parcel` reads the data its binding names, `read_parquet('data/customers/**/*.parquet')`, relative to DuckDB's working directory. To read another relation, such as a DuckDB table, name it with `--source` and write a `.duckdb.json` instead:
 
 ```bash
 parcel compile customers.yaml --schema data/customers --target duckdb --source main.customers -o contracts/customers.duckdb.json
 ```
 
-Build the extension with `cargo build --release -p parcel-duckdb-extension`, then add DuckDB's metadata footer:
+### Build the extension
 
 ```bash
+cargo build --release -p parcel-duckdb-extension
 cargo run --release -p parcel-duckdb-extension --bin package -- target/release/libparcel_duckdb.dylib parcel.duckdb_extension
 ```
 
-The extension is not signed: load it with `allow_unsigned_extensions` set (`duckdb -unsigned`).
+`package` adds the metadata footer DuckDB checks before loading an extension. On Linux the library is `libparcel_duckdb.so`. The extension is not signed: start DuckDB with `duckdb -unsigned`, or set `allow_unsigned_extensions`.
 
 ## Spark
 
-Compile to a JSON file, then start Spark with the extension:
+Compile to a `.spark.json`, build the extension, and start Spark with it:
 
 ```bash
 parcel compile customers.yaml --schema data/customers --target spark -o contracts/customers.spark.json
@@ -79,7 +91,11 @@ spark-sql --jars parcel-spark.jar \
 SELECT * FROM `sales/customers@1.0.0`;
 ```
 
-The extension reads the `*.spark.json` files in the directories `spark.parcel.contracts` lists (comma-separated). Caller fields are `spark.parcel.caller.<field>`, set at start or with `SET` / `spark.conf.set` between queries: `spark.parcel.caller.other.region` for `ctx.other.region`. A list (`roles`) is comma-separated.
+`build.sh` compiles against the jars of `SPARK_HOME`, or of the installed `pyspark` package, and needs Java 17 or later.
+
+The extension reads the `*.spark.json` files in the directories `spark.parcel.contracts` lists, separated by commas; the default is `contracts`. Caller fields are set when Spark starts, or between queries with `SET` or `spark.conf.set`.
+
+A `.spark.json` reads the data its binding names. `--source` names a table instead, such as `--source sales.customers`.
 
 ## What runs, and what is refused
 
@@ -92,10 +108,15 @@ The extension reads the `*.spark.json` files in the directories `spark.parcel.co
 | `shape` | refused: shapes act on the caller's aggregates or spend a privacy budget |
 | `enrich`, WebAssembly functions | refused |
 
+A contract that uses a refused feature does not compile for an engine, and `parcel compile --target` names the rule.
+
 ## Limits
 
-- **Governance, not enforcement.** In DuckDB and Spark the caller states who they are, and anyone who can read the files can read them directly. Use peQL where the caller must be authenticated.
-- **Caller conditions.** DuckDB and Spark fold caller fields into constants when they plan, so a rule comparing a column with a caller field prunes partitions and row groups.
-- **A refused caller and no rows.** The `decide` guard is part of the filter: over an empty table, a refused caller gets no rows rather than an error.
-- **The DuckDB extension** carries parcel's runtime to read `.parcel` files (about 128 MB unstripped); nothing of it runs while a query executes.
+- **Governance, not enforcement.** The caller states who they are, and anyone who can read the files can read them directly. Use peQL where the caller must be authenticated.
+- **A refused caller can get no rows instead of an error.** The `decide` guard is one condition of the filter, and the engine may stop at another first: over an empty table, or when no caller field is set and every condition is false.
+- **The DuckDB extension** carries parcel's runtime to read `.parcel` files, about 128 MB unstripped. None of it runs while a query executes.
 - **Strings in Spark.** Spark reads a backslash in a string literal as an escape; parcel doubles each one.
+
+## Testing
+
+`tests/engines/run.py` compiles the contracts in `examples/customers` for both engines, queries each one by name as every caller, and compares the rows, value for value, with the rows `parcel check --rows` computes. See `tests/engines/README.md`.

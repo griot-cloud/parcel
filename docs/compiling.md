@@ -16,7 +16,7 @@ parcel compile orders.yaml --schema orders.csv
 `--schema` reads column names and types from a CSV file, Parquet file, or directory of Parquet files. Without it, parcel reads them from the binding's Parquet data when it is on this machine, and otherwise from the types in `expose`; see [Where column types come from](cli.md#where-column-types-come-from). The command prints the contract name, version, compilation hash, where the types came from, and when each rule runs:
 
 ```text
-purchasing/orders v1  4d7ba39f6ae3c615
+purchasing/orders v1.0.0  f86a461d9788e718
   types     orders.csv
 
   supplier_orders  admit   prunes

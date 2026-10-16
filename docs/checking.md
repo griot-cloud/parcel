@@ -31,7 +31,7 @@ parcel check orders.yaml --data orders.csv
 Parcel checks the contract's definitions against the supplied columns and types, then evaluates every rule against the rows. The output starts with the contract, the row count and the verdict, then has one section per caller:
 
 ```text
-purchasing/orders v1
+purchasing/orders v1.0.0
 4 rows  orders.csv  valid
 
 ==== default caller ========================================
@@ -40,6 +40,8 @@ rows     0/4
 
 Policies
   supplier_orders  ✗  admit      4 removed
+
+differential  ✓  8
 ```
 
 The default caller has an empty tenant, so `supplier_orders` removes every order. Pass callers to see the quality rules over the rows each one receives.
@@ -73,7 +75,7 @@ parcel check orders.yaml --data orders.csv --caller acme.yaml --caller globex.ya
 The output is:
 
 ```text
-purchasing/orders v1
+purchasing/orders v1.0.0
 4 rows  orders.csv  valid
 
 ==== acme/purchasing-team ==================================
@@ -138,7 +140,7 @@ This creates `check-results.json` instead of printing the text report. Selected 
 ```json
 {
   "contract": "purchasing/orders",
-  "version": 1,
+  "version": "1.0.0",
   "verdict": {
     "valid": true,
     "breached": [],

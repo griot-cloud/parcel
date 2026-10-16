@@ -320,7 +320,7 @@ async fn run(cmd: Command) -> R {
             #[cfg(feature = "substrait")]
             if let Some(path) = &substrait {
                 let (bytes, warnings) = parcel_runtime::export::validation_substrait(c, &table)?;
-                std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+                write_file(path, &bytes)?;
                 for w in warnings {
                     anstream::eprintln!("{} {w}", paint(YELLOW, "warning:"));
                 }
@@ -345,8 +345,7 @@ async fn run(cmd: Command) -> R {
                 o.print();
             }
             if let Some(out) = out {
-                std::fs::write(&out, c.to_bytes().map_err(|e| e.to_string())?)
-                    .map_err(|e| e.to_string())?;
+                write_file(&out, &c.to_bytes().map_err(|e| e.to_string())?)?;
                 anstream::eprintln!(
                     "{} wrote {}  {}",
                     paint(GREEN, OK),
@@ -385,7 +384,7 @@ async fn run(cmd: Command) -> R {
                 yaml_serde::to_string(&imported.doc).map_err(|e| e.to_string())?
             );
             match out {
-                Some(p) => std::fs::write(&p, yaml).map_err(|e| e.to_string())?,
+                Some(p) => write_file(&p, yaml.as_bytes())?,
                 None => print!("{yaml}"),
             }
             for n in &imported.notes {
@@ -682,6 +681,15 @@ fn report_header(o: &mut Out, c: &Compilation, from: &TypesFrom) {
     ui::field(o, "types", from);
 }
 
+/// Write `bytes` to `path`, creating its directory when missing.
+fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let err = |e: std::io::Error| format!("{}: {e}", path.display());
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(err)?;
+    }
+    std::fs::write(path, bytes).map_err(err)
+}
+
 /// `compile --target`: check the contract runs on `engine`, then print its governed query, or
 /// write what the engine loads.
 fn compile_target(c: &Compilation, engine: &str, source: Option<&str>, out: Option<&Path>) -> R {
@@ -713,7 +721,7 @@ fn compile_target(c: &Compilation, engine: &str, source: Option<&str>, out: Opti
             .into_bytes(),
         _ => parcel_spark::json(c, source)?.into_bytes(),
     };
-    std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    write_file(path, &bytes)?;
     let mut o = Out::default();
     o.line(format!(
         "{}  {}",
