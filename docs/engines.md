@@ -1,6 +1,6 @@
 # Engines
 
-A compiled contract can be queried by name inside DuckDB, Postgres and Spark. The engine runs the contract's rules as part of its own query: the data stays where it is, nothing is copied, and nothing is created per contract. Each caller gets the rows and values the contract allows them.
+A compiled contract can be queried by name inside DuckDB and Spark. The engine runs the contract's rules as part of its own query: the data stays where it is, nothing is copied, and nothing is created per contract. Each caller gets the rows and values the contract allows them.
 
 ```sql
 SELECT region, count(*) FROM "sales/customers@1.0.0" GROUP BY region;
@@ -23,7 +23,6 @@ The row expressions are the compiled ones, written in the engine's SQL, so the e
 | Engine | Loads | Resolves the name with | Caller from |
 | --- | --- | --- | --- |
 | DuckDB | `.parcel` files | the `parcel` extension's replacement scan | variables: `SET VARIABLE parcel_tenant = '...'` |
-| Postgres | a `.sql` file per contract | `SELECT parcel.use(name)`: a temporary view for the session | settings: `SELECT parcel.caller(...)` |
 | Spark | a `.spark.json` file per contract | the `parcel` Spark extension's analyser rule | configuration: `spark.parcel.caller.<field>` |
 
 ## DuckDB
@@ -62,28 +61,6 @@ cargo run --release -p parcel-duckdb-extension --bin package -- target/release/l
 
 The extension is not signed: load it with `allow_unsigned_extensions` set (`duckdb -unsigned`).
 
-## Postgres
-
-Compile to a SQL file and apply it:
-
-```bash
-parcel compile customers.yaml --schema data/customers --target postgres -o customers.postgres.sql
-psql -f customers.postgres.sql
-```
-
-The file installs the `parcel` schema the first time (a registry table, `parcel.contracts`, and four functions) and registers the contract. Applying it again replaces the contract. Then, in a session:
-
-```sql
-SELECT parcel.caller(id => 'hq-analyst', tenant => 'our_company', purpose => 'analytics',
-                     tier => 'internal', other => '{"region": "North"}');
-SELECT parcel.use('sales/customers@1.0.0');
-SELECT * FROM "sales/customers@1.0.0";
-```
-
-`parcel.use` creates a temporary view named after the contract, dropped when the session ends; `parcel.use_all()` does so for every registered contract. The view reads the caller's settings (`parcel.tenant`, `parcel.other_region`, ...) each time it is queried. The base table is never altered.
-
-A Parquet binding names files; in Postgres the data is the table named by the binding's last path segment (`data/customers/` reads `customers`). `--source` names another table.
-
 ## Spark
 
 Compile to a JSON file, then start Spark with the extension:
@@ -117,8 +94,8 @@ The extension reads the `*.spark.json` files in the directories `spark.parcel.co
 
 ## Limits
 
-- **Governance, not enforcement.** In DuckDB and Spark the caller states who they are, and anyone who can read the files can read them directly. In Postgres, a session sets its own caller. Use peQL where the caller must be authenticated.
-- **Postgres and caller conditions.** Postgres does not fold `current_setting(...)` when it plans, so a rule comparing a column with a caller field filters during the scan rather than through an index. DuckDB and Spark fold caller fields into constants, so they prune partitions and row groups.
+- **Governance, not enforcement.** In DuckDB and Spark the caller states who they are, and anyone who can read the files can read them directly. Use peQL where the caller must be authenticated.
+- **Caller conditions.** DuckDB and Spark fold caller fields into constants when they plan, so a rule comparing a column with a caller field prunes partitions and row groups.
 - **A refused caller and no rows.** The `decide` guard is part of the filter: over an empty table, a refused caller gets no rows rather than an error.
 - **The DuckDB extension** carries parcel's runtime to read `.parcel` files (about 128 MB unstripped); nothing of it runs while a query executes.
 - **Strings in Spark.** Spark reads a backslash in a string literal as an escape; parcel doubles each one.

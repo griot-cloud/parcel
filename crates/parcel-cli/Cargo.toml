@@ -16,7 +16,6 @@ parcel-core = { path = "../parcel-core", version = "0.0.4" }
 parcel-runtime = { path = "../parcel-runtime", version = "0.0.4" }
 parcel-sql = { path = "../parcel-sql", version = "0.0.4" }
 parcel-duckdb = { path = "../parcel-duckdb", version = "0.0.4" }
-parcel-postgres = { path = "../parcel-postgres", version = "0.0.4" }
 parcel-spark = { path = "../parcel-spark", version = "0.0.4" }
 datafusion = "55.1.0"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }

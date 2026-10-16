@@ -54,7 +54,7 @@ Applications load this file without recompiling the YAML. The loader requires th
 parcel compile orders.yaml --schema orders.csv --target duckdb -o contracts/orders.parcel
 ```
 
-`--target duckdb`, `postgres` or `spark` checks that the contract runs as one query in that engine, then writes what the engine loads: the `.parcel` for DuckDB, a SQL file for Postgres, a JSON file for Spark. Without `-o`, it prints the governed query. `--source` names the relation the engine reads in place of the binding's. See {doc}`engines`.
+`--target duckdb` or `spark` checks that the contract runs as one query in that engine, then writes what the engine loads: the `.parcel` for DuckDB, a JSON file for Spark. Without `-o`, it prints the governed query. `--source` names the relation the engine reads in place of the binding's. See {doc}`engines`.
 
 ## Inspect the compilation as JSON
 
@@ -111,7 +111,7 @@ parcel compile CONTRACT [--schema SCHEMA] [OPTIONS]
 | `CONTRACT` | Required path to a YAML or JSON contract. |
 | `--schema SCHEMA` | CSV file, Parquet file, or Parquet directory supplying column names and types. Defaults to the binding's local Parquet data, then to `expose`. |
 | `-o FILE`, `--out FILE` | Write a loadable compiled contract to this file, or with `--target`, what that engine loads. |
-| `--target ENGINE` | `duckdb`, `postgres` or `spark`: check the contract runs in that engine, and print its query or write what it loads. |
+| `--target ENGINE` | `duckdb` or `spark`: check the contract runs in that engine, and print its query or write what it loads. |
 | `--source RELATION` | With `--target`: the relation the engine reads, in place of the one the binding names. |
 | `--json` | Print compilation details as JSON instead of the text report. |
 | `--sql DIALECT` | Print validation SQL. Dialects: `duckdb`, `postgres`, `mysql`, `sqlite`, `bigquery`, `snowflake`, and `datafusion` (the execution library used by parcel). |

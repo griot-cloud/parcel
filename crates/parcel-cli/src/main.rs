@@ -67,10 +67,10 @@ enum Command {
         #[command(flatten)]
         schema: SchemaArg,
         /// Write the compiled contract to this file: the `.parcel` for peQL and DuckDB, or, with
-        /// --target postgres or spark, the file that engine loads.
+        /// --target spark, the file that engine loads.
         #[arg(long, short)]
         out: Option<PathBuf>,
-        /// Check the contract runs on an engine, and write what it loads: duckdb, postgres, spark.
+        /// Check the contract runs on an engine, and write what it loads: duckdb, spark.
         #[arg(long, value_name = "ENGINE")]
         target: Option<String>,
         /// With --target: the relation the engine reads, in place of the one the binding names.
@@ -687,12 +687,9 @@ fn report_header(o: &mut Out, c: &Compilation, from: &TypesFrom) {
 fn compile_target(c: &Compilation, engine: &str, source: Option<&str>, out: Option<&Path>) -> R {
     let artifact = match engine {
         "duckdb" => parcel_duckdb::artifact(c, source),
-        "postgres" => parcel_postgres::artifact(c, source),
         "spark" => parcel_spark::artifact(c, source),
         other => {
-            return Err(format!(
-                "unknown target `{other}`; targets: duckdb, postgres, spark"
-            ));
+            return Err(format!("unknown target `{other}`; targets: duckdb, spark"));
         }
     }
     .map_err(|e| format!("{engine}: {e}"))?;
@@ -714,7 +711,6 @@ fn compile_target(c: &Compilation, engine: &str, source: Option<&str>, out: Opti
         "duckdb" => serde_json::to_string_pretty(&artifact)
             .map_err(|e| e.to_string())?
             .into_bytes(),
-        "postgres" => parcel_postgres::script(c, source)?.into_bytes(),
         _ => parcel_spark::json(c, source)?.into_bytes(),
     };
     std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;

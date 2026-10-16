@@ -3167,7 +3167,6 @@ dependencies = [
  "libc",
  "parcel-core",
  "parcel-duckdb",
- "parcel-postgres",
  "parcel-runtime",
  "parcel-spark",
  "parcel-sql",
@@ -3220,16 +3219,6 @@ dependencies = [
  "parcel-core",
  "parcel-duckdb",
  "parcel-runtime",
- "parcel-sql",
- "serde_json",
-]
-
-[[package]]
-name = "parcel-postgres"
-version = "0.0.4"
-dependencies = [
- "datafusion",
- "parcel-core",
  "parcel-sql",
  "serde_json",
 ]

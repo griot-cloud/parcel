@@ -1,7 +1,7 @@
 name: engines
 
-# The engine targets end to end: every contract in examples/customers, compiled for DuckDB,
-# Postgres and Spark, queried by name as every caller, rows compared with parcel's own.
+# The engine targets end to end: every contract in examples/customers, compiled for DuckDB
+# and Spark, queried by name as every caller, rows compared with parcel's own.
 on:
   push:
     branches: [main]
@@ -20,14 +20,6 @@ env:
 jobs:
   engines:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@stable
@@ -40,7 +32,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Python packages
-        run: pip install duckdb==1.5.2 pyarrow "psycopg[binary]" pyspark==4.0.1
+        run: pip install duckdb==1.5.2 pyarrow pyspark==4.0.1
       - name: parcel and the DuckDB extension
         run: |
           cargo build -p parcel-cli
@@ -53,5 +45,4 @@ jobs:
         run: |
           python tests/engines/run.py --parcel target/debug/parcel \
             --duckdb-extension target/release/parcel.duckdb_extension \
-            --postgres 'host=localhost port=5432 user=postgres password=postgres dbname=postgres' \
             --spark-jar crates/parcel-spark/jvm/parcel-spark.jar

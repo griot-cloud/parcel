@@ -5,18 +5,16 @@ then tags it. See [CONTRIBUTING](docs/contributing.md#releasing).
 
 ## Unreleased
 
-- Engine targets: `parcel compile --target duckdb|postgres|spark` turns a compiled contract into one
+- Engine targets: `parcel compile --target duckdb|spark` turns a compiled contract into one
   governed query each engine resolves by name, `<contract>@<version>`, with no object created
   per contract and the data left in place. `expose`, `transform`, `admit`, `decide` and
   `assert ... on_fail: drop` run in the engine; contracts with shapes, enrichers or WebAssembly
   functions are refused. `--source` names the relation the engine reads.
   - DuckDB: the `parcel` extension (`crates/parcel-duckdb-extension`) reads `.parcel` files and
     resolves names with a replacement scan; caller fields are variables (`parcel_tenant`).
-  - Postgres: a SQL file installs the `parcel` schema and registers the contract;
-    `parcel.use(name)` makes it a temporary view; `parcel.caller(...)` sets the caller.
   - Spark: a Java extension (`crates/parcel-spark/jvm`) resolves names during analysis; caller
     fields are `spark.parcel.caller.<field>`.
-  - Crates `parcel-sql`, `parcel-duckdb`, `parcel-postgres`, `parcel-spark`; parcel-core and
+  - Crates `parcel-sql`, `parcel-duckdb`, `parcel-spark`; parcel-core and
     parcel-runtime are unchanged.
 - `parcel check --rows DIR` writes the rows each caller receives, as Parquet.
 - Reading a Parquet directory partitioned as `key=value/` now includes the partition columns.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end tests of parcel's engine targets: DuckDB, Postgres and Spark.
+"""End-to-end tests of parcel's engine targets: DuckDB and Spark.
 
 For each engine, every caller queries each contract by name, and the rows the engine returns are
 compared, row for row and value for value, with the rows parcel's own runtime computes
@@ -10,11 +10,9 @@ one table, and a replaced contract taking effect on the next query.
     tests/engines/run.py --parcel target/debug/parcel \\
         --duckdb-extension target/release/parcel.duckdb_extension \\
         --spark-jar crates/parcel-spark/jvm/parcel-spark.jar \\
-        --postgres 'host=127.0.0.1 port=5432 user=postgres dbname=postgres' \\
         [--data customers.csv] [--json results.json]
 
-Needs Python packages duckdb, pyarrow, and for the other engines psycopg and pyspark (with
-Java 17+). An engine whose option is missing is skipped.
+Needs Python packages duckdb, pyarrow, and for Spark pyspark (with Java 17+). An engine whose option is missing is skipped.
 """
 
 import argparse
@@ -37,17 +35,17 @@ CONTRACTS = {
     "sales/customer_segments@1.0.0": EXAMPLE / "segments.yaml",
 }
 COLUMNS = [
-    ("customer_id", "VARCHAR", "text"),
-    ("customer_name", "VARCHAR", "text"),
-    ("customer_age", "BIGINT", "bigint"),
-    ("gender", "VARCHAR", "text"),
-    ("customer_segment", "VARCHAR", "text"),
-    ("customer_city", "VARCHAR", "text"),
-    ("customer_state", "VARCHAR", "text"),
-    ("customer_country", "VARCHAR", "text"),
-    ("region", "VARCHAR", "text"),
-    ("customer_postal_code", "VARCHAR", "text"),
-    ("customer_acquisition_cost", "DOUBLE", "double precision"),
+    ("customer_id", "VARCHAR"),
+    ("customer_name", "VARCHAR"),
+    ("customer_age", "BIGINT"),
+    ("gender", "VARCHAR"),
+    ("customer_segment", "VARCHAR"),
+    ("customer_city", "VARCHAR"),
+    ("customer_state", "VARCHAR"),
+    ("customer_country", "VARCHAR"),
+    ("region", "VARCHAR"),
+    ("customer_postal_code", "VARCHAR"),
+    ("customer_acquisition_cost", "DOUBLE"),
 ]
 
 
@@ -106,7 +104,7 @@ def dirty(rows, seed=11):
 
 
 def prepare_data(duck, work, csv):
-    """Write the customers as Parquet partitioned by region, and as CSV for Postgres."""
+    """Write the customers as Parquet partitioned by region."""
     data = work / "data" / "customers"
     if csv:
         duck.execute(f"""CREATE TABLE base AS SELECT * REPLACE (
@@ -118,18 +116,17 @@ def prepare_data(duck, work, csv):
         rows = [dict(zip(names, r)) for r in clean]
     else:
         rows = synthetic(5000)
-        duck.execute("CREATE TABLE base (" + ", ".join(f"{c} {t}" for c, t, _ in COLUMNS) + ")")
+        duck.execute("CREATE TABLE base (" + ", ".join(f"{c} {t}" for c, t in COLUMNS) + ")")
         duck.executemany("INSERT INTO base VALUES (" + ", ".join("?" for _ in COLUMNS) + ")",
-                         [[r[c] for c, _, _ in COLUMNS] for r in rows])
+                         [[r[c] for c, _ in COLUMNS] for r in rows])
     extra = dirty(rows)
     duck.executemany("INSERT INTO base VALUES (" + ", ".join("?" for _ in COLUMNS) + ")",
-                     [[r[c] for c, _, _ in COLUMNS] for r in extra])
+                     [[r[c] for c, _ in COLUMNS] for r in extra])
     # A row with no region cannot sit in a Hive partition; Parquet writes it under
     # region=__HIVE_DEFAULT_PARTITION__, which every engine reads back differently, so it
-    # stays in the CSV only.
+    # is left out.
     duck.execute(f"COPY (SELECT * FROM base WHERE region IS NOT NULL) TO '{data}' "
                  "(FORMAT parquet, PARTITION_BY (region))")
-    duck.execute(f"COPY (SELECT * FROM base) TO '{work / 'customers.csv'}' (FORMAT csv, HEADER)")
     total = duck.execute("SELECT count(*) FROM base WHERE region IS NOT NULL").fetchone()[0]
     return total, len(extra)
 
@@ -152,8 +149,7 @@ def compile_all(parcel, work):
     for name, src in CONTRACTS.items():
         stem = src.stem
         shutil.copy(src, work / src.name)
-        for target, path in [("duckdb", f"{stem}.parcel"), ("postgres", f"{stem}.postgres.sql"),
-                             ("spark", f"{stem}.spark.json")]:
+        for target, path in [("duckdb", f"{stem}.parcel"), ("spark", f"{stem}.spark.json")]:
             run([parcel, "compile", src.name, "--schema", "data/customers", "--target", target,
                  "-o", f"contracts/{path}"], work)
     callers = sorted((EXAMPLE / "callers").glob("*.yaml"))
@@ -264,46 +260,6 @@ class DuckDb:
 
     def pushed(self, plan):
         return "READ_PARQUET" in plan and "Filters:" in plan
-
-
-class Postgres:
-    name = "postgres"
-
-    def __init__(self, dsn, work):
-        import psycopg
-        self.con = psycopg.connect(dsn, autocommit=True)
-        cur = self.con.cursor()
-        cur.execute("DROP SCHEMA IF EXISTS parcel CASCADE")
-        cur.execute("DROP TABLE IF EXISTS customers")
-        cur.execute("CREATE TABLE customers (" + ", ".join(f"{c} {t}" for c, _, t in COLUMNS) + ")")
-        with cur.copy("COPY customers FROM STDIN WITH (FORMAT csv, HEADER true)") as cp:
-            cp.write((work / "customers.csv").read_bytes())
-        cur.execute("DELETE FROM customers WHERE region IS NULL")
-        cur.execute("CREATE INDEX ON customers (region)")
-        cur.execute("ANALYZE customers")
-        for f in sorted((work / "contracts").glob("*.postgres.sql")):
-            cur.execute(f.read_text())
-        cur.execute("SELECT parcel.use_all()")
-
-    def as_caller(self, c):
-        self.con.execute(
-            "SELECT parcel.caller(id => %s, tenant => %s, purpose => %s, tier => %s, other => %s)",
-            [c.get("id"), c.get("tenant"), c.get("purpose"), c.get("tier"), json.dumps(c["other"])])
-
-    def query(self, sql):
-        cur = self.con.execute(sql)
-        cols = [d.name for d in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
-
-    def quote(self, name):
-        return f'"{name}"'
-
-    def explain(self, sql):
-        return "\n".join(r[0] for r in self.con.execute("EXPLAIN " + sql).fetchall())
-
-    def pushed(self, plan):
-        # The view is inlined: the contract's rules are a filter on the table scan itself.
-        return "on customers" in plan and "Subquery Scan" not in plan and "Filter:" in plan
 
 
 class Spark:
@@ -461,7 +417,7 @@ def test_refusals(parcel, work, results):
     src = (work / "customers.yaml").read_text()
     shaped = src + ("\n  - id: small_groups\n    op: shape\n    operator: suppress\n    params: {k: 5}\n")
     (work / "shaped.yaml").write_text(shaped)
-    for target in ["duckdb", "postgres", "spark"]:
+    for target in ["duckdb", "spark"]:
         p = run([parcel, "compile", "shaped.yaml", "--schema", "data/customers", "--target", target],
                 work, check=False)
         ok = p.returncode != 0 and "shape `small_groups` is not supported" in p.stderr
@@ -474,7 +430,6 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--parcel", required=True)
     ap.add_argument("--duckdb-extension")
-    ap.add_argument("--postgres", help="a libpq connection string; the database is written to")
     ap.add_argument("--spark-jar")
     ap.add_argument("--data", help="customers CSV; default: synthetic customers")
     ap.add_argument("--json", help="write the results here")
@@ -498,8 +453,6 @@ def main():
     if args.duckdb_extension:
         ext = str(Path(args.duckdb_extension).resolve())
         makers.append(("duckdb", lambda: DuckDb(ext, work)))
-    if args.postgres:
-        makers.append(("postgres", lambda: Postgres(args.postgres, work)))
     if args.spark_jar:
         jar = str(Path(args.spark_jar).resolve())
         makers.append(("spark", lambda: Spark(jar, work)))

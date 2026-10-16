@@ -13,8 +13,8 @@
 //! Row expressions are the compiled ones, written in the engine's dialect by DataFusion's
 //! unparser, so the engine evaluates exactly what peQL evaluates. Where a compiled expression
 //! has a caller placeholder (`$c0`), the placeholder's CEL, which reads only `ctx`, is written
-//! as SQL in which each caller field is read the engine's way: a DuckDB variable, a Postgres
-//! setting, a Spark configuration value. Nothing is copied and nothing is created per
+//! as SQL in which each caller field is read the engine's way: a DuckDB variable, a Spark
+//! configuration value. Nothing is copied and nothing is created per
 //! contract; the engine resolves the contract's name to this query when it is queried.
 //!
 //! What one query cannot express is refused, not approximated: shapes (they act on the

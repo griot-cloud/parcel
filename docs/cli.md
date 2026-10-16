@@ -97,7 +97,7 @@ The `types` line says which was used. Without data, a rule that reads a column m
 | --- | --- | --- |
 | `parcel check CONTRACT --data DATA` | Quality verdict, caller access results, and a comparison of rule evaluators. | [Checking contracts](checking.md) |
 | `parcel compile CONTRACT` | Compilation report, with options to save the contract or export validation. | [Compiling contracts](compiling.md) |
-| `parcel compile CONTRACT --target ENGINE` | The contract as a query DuckDB, Postgres or Spark resolves by name. | [Engines](engines.md) |
+| `parcel compile CONTRACT --target ENGINE` | The contract as a query DuckDB or Spark resolves by name. | [Engines](engines.md) |
 
 For example, from `examples/suppliers` in the repository:
 
