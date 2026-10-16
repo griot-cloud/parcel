@@ -66,9 +66,16 @@ enum Command {
         contract: PathBuf,
         #[command(flatten)]
         schema: SchemaArg,
-        /// Write the compiled contract to this file.
+        /// Write the compiled contract to this file: the `.parcel` for peQL and DuckDB, or, with
+        /// --target spark, the file that engine loads.
         #[arg(long, short)]
         out: Option<PathBuf>,
+        /// Check the contract runs on an engine, and write what it loads: duckdb, spark.
+        #[arg(long, value_name = "ENGINE")]
+        target: Option<String>,
+        /// With --target: the relation the engine reads, in place of the one the binding names.
+        #[arg(long, value_name = "RELATION", requires = "target")]
+        source: Option<String>,
         /// Print the compilation as JSON.
         #[arg(long)]
         json: bool,
@@ -99,6 +106,9 @@ enum Command {
         /// Rows for the differential test.
         #[arg(long, default_value_t = 1000)]
         sample: usize,
+        /// Write the rows each caller receives to DIR/<caller id>.parquet.
+        #[arg(long, value_name = "DIR")]
+        rows: Option<PathBuf>,
         /// Print the result as JSON.
         #[arg(long)]
         json: bool,
@@ -282,6 +292,8 @@ async fn run(cmd: Command) -> R {
             contract,
             schema,
             out,
+            target,
+            source,
             json,
             sql,
             table,
@@ -302,10 +314,13 @@ async fn run(cmd: Command) -> R {
                 return Ok(ExitCode::from(1));
             };
             let c = &ready.compiled;
+            if let Some(engine) = &target {
+                return compile_target(c, engine, source.as_deref(), out.as_deref());
+            }
             #[cfg(feature = "substrait")]
             if let Some(path) = &substrait {
                 let (bytes, warnings) = parcel_runtime::export::validation_substrait(c, &table)?;
-                std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+                write_file(path, &bytes)?;
                 for w in warnings {
                     anstream::eprintln!("{} {w}", paint(YELLOW, "warning:"));
                 }
@@ -330,8 +345,7 @@ async fn run(cmd: Command) -> R {
                 o.print();
             }
             if let Some(out) = out {
-                std::fs::write(&out, c.to_bytes().map_err(|e| e.to_string())?)
-                    .map_err(|e| e.to_string())?;
+                write_file(&out, &c.to_bytes().map_err(|e| e.to_string())?)?;
                 anstream::eprintln!(
                     "{} wrote {}  {}",
                     paint(GREEN, OK),
@@ -346,10 +360,18 @@ async fn run(cmd: Command) -> R {
             data,
             callers,
             sample,
+            rows,
             json,
             functions,
             types,
-        } => check::run(&contract, &data, &callers, sample, json, &functions, &types).await,
+        } => {
+            let options = check::Options {
+                sample,
+                rows: rows.as_deref(),
+                json,
+            };
+            check::run(&contract, &data, &callers, options, &functions, &types).await
+        }
         Command::Import {
             from: ImportCommand::Odcs { file, object, out },
         } => {
@@ -362,7 +384,7 @@ async fn run(cmd: Command) -> R {
                 yaml_serde::to_string(&imported.doc).map_err(|e| e.to_string())?
             );
             match out {
-                Some(p) => std::fs::write(&p, yaml).map_err(|e| e.to_string())?,
+                Some(p) => write_file(&p, yaml.as_bytes())?,
                 None => print!("{yaml}"),
             }
             for n in &imported.notes {
@@ -657,6 +679,91 @@ fn report_header(o: &mut Out, c: &Compilation, from: &TypesFrom) {
     let cc = &c.contract;
     ui::title_line(o, &cc.name, &cc.version, &cc.compilation_hash[..16]);
     ui::field(o, "types", from);
+}
+
+/// Write `bytes` to `path`, creating its directory when missing.
+fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let err = |e: std::io::Error| format!("{}: {e}", path.display());
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(err)?;
+    }
+    std::fs::write(path, bytes).map_err(err)
+}
+
+/// `compile --target`: check the contract runs on `engine`, then print its governed query, or
+/// write what the engine loads.
+fn compile_target(c: &Compilation, engine: &str, source: Option<&str>, out: Option<&Path>) -> R {
+    let artifact = match engine {
+        "duckdb" => parcel_duckdb::artifact(c, source),
+        "spark" => parcel_spark::artifact(c, source),
+        other => {
+            return Err(format!("unknown target `{other}`; targets: duckdb, spark"));
+        }
+    }
+    .map_err(|e| format!("{engine}: {e}"))?;
+    let Some(path) = out else {
+        println!("{};", artifact.query);
+        return Ok(ExitCode::SUCCESS);
+    };
+    let parcel_file = path.extension().is_some_and(|e| e == "parcel");
+    let bytes = match engine {
+        // The DuckDB extension reads the compiled contract itself.
+        "duckdb" if parcel_file => {
+            if source.is_some() {
+                return Err(
+                    "a .parcel reads the data its binding names; to read another relation, write the DuckDB artifact instead: -o <name>.duckdb.json".into(),
+                );
+            }
+            c.to_bytes().map_err(|e| e.to_string())?
+        }
+        "duckdb" => serde_json::to_string_pretty(&artifact)
+            .map_err(|e| e.to_string())?
+            .into_bytes(),
+        _ => parcel_spark::json(c, source)?.into_bytes(),
+    };
+    write_file(path, &bytes)?;
+    let mut o = Out::default();
+    o.line(format!(
+        "{}  {}",
+        paint(BOLD, &artifact.name),
+        paint(CYAN, engine)
+    ));
+    ui::field(&mut o, "source", &artifact.source);
+    let callers: Vec<&str> = artifact.caller.iter().map(|f| f.name.as_str()).collect();
+    ui::field(
+        &mut o,
+        "caller",
+        if callers.is_empty() {
+            "-".to_owned()
+        } else {
+            callers.join(", ")
+        },
+    );
+    let count = |op: &str| artifact.filters.iter().filter(|f| f.op == op).count();
+    ui::field(
+        &mut o,
+        "rules",
+        format!(
+            "{} decide  {} admit  {} assert  {} transform",
+            artifact.decisions.len(),
+            count("admit"),
+            count("assert"),
+            c.contract
+                .report
+                .iter()
+                .filter(|r| r.op == "transform")
+                .count()
+        ),
+    );
+    ui::field(&mut o, "columns", artifact.columns.len());
+    o.line(format!(
+        "{} wrote {}  {}",
+        paint(GREEN, OK),
+        path.display(),
+        paint(DIM, size(path))
+    ));
+    o.eprint();
+    Ok(ExitCode::SUCCESS)
 }
 
 /// A file's size: `4.9 KB`.

@@ -1,0 +1,5 @@
+id: globex
+tenant: globex
+purpose: analytics
+tier: partner
+other: {region: East}

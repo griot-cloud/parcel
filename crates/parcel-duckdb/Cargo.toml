@@ -1,0 +1,16 @@
+[package]
+name = "parcel-duckdb"
+description = "parcel contracts in DuckDB: a compiled contract as a DuckDB query"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+parcel-core = { path = "../parcel-core", version = "0.0.4" }
+parcel-sql = { path = "../parcel-sql", version = "0.0.4" }
+datafusion = { version = "55.1.0", default-features = true }
+
+[dev-dependencies]
+serde_json.workspace = true

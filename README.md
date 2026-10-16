@@ -8,6 +8,7 @@ parcel is a data contract language and compiler for defining data quality rules 
 - **Check data before it reaches a report.** Require valid amounts, complete identifiers or fresh data, with explicit actions for failed checks.
 - **Test policy changes before using them.** Check sample data and caller profiles to catch invalid expressions and inspect access.
 - **Use the same checks in another engine.** Export data validation as SQL or Substrait, or use parcel's Rust libraries in an application.
+- **Query a contract by name in DuckDB or Spark.** `SELECT * FROM "sales/customers@1.0.0"` returns the rows and values each caller is allowed, computed by the engine itself.
 
 ## Documentation
 

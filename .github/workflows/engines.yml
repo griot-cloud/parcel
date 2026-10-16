@@ -1,0 +1,48 @@
+name: engines
+
+# The engine targets end to end: every contract in examples/customers, compiled for DuckDB
+# and Spark, queried by name as every caller, rows compared with parcel's own.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engines-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  engines:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python packages
+        run: pip install duckdb==1.5.2 pyarrow pyspark==4.0.1
+      - name: parcel and the DuckDB extension
+        run: |
+          cargo build -p parcel-cli
+          cargo build --release -p parcel-duckdb-extension
+          cargo run --release -p parcel-duckdb-extension --bin package -- \
+            target/release/libparcel_duckdb.so target/release/parcel.duckdb_extension
+      - name: The Spark extension
+        run: crates/parcel-spark/jvm/build.sh crates/parcel-spark/jvm/parcel-spark.jar
+      - name: Engines end to end
+        run: |
+          python tests/engines/run.py --parcel target/debug/parcel \
+            --duckdb-extension target/release/parcel.duckdb_extension \
+            --spark-jar crates/parcel-spark/jvm/parcel-spark.jar

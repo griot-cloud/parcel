@@ -4,3 +4,5 @@ examples/*/_functions/
 examples/*/target/
 docs/_build/
 .DS_Store
+crates/parcel-spark/jvm/*.jar
+__pycache__/

@@ -158,6 +158,33 @@ pub async fn schema_for(
     Ok((Arc::new(expose_schema(doc)), TypesFrom::Expose { why }))
 }
 
+/// The Hive partition columns of a Parquet directory, outermost first: `region` for
+/// `data/customers/region=North/part-0.parquet`.
+fn hive_partitions(dir: &Path) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut at = dir.to_path_buf();
+    loop {
+        let Ok(rd) = std::fs::read_dir(&at) else {
+            return keys;
+        };
+        let next = rd.flatten().map(|e| e.path()).find(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.contains('=') && !n.starts_with('.'))
+        });
+        let Some(next) = next else {
+            return keys;
+        };
+        let name = next
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        keys.push(name.split('=').next().unwrap_or_default().to_owned());
+        at = next;
+    }
+}
+
 /// Whether a directory holds Parquet files, at any depth.
 fn has_parquet(dir: &Path) -> bool {
     std::fs::read_dir(dir)
@@ -260,7 +287,14 @@ async fn open(
         let schema = Schema::new(fields);
         ctx.read_csv(p, CsvReadOptions::new().schema(&schema)).await
     } else {
-        ctx.read_parquet(p, ParquetReadOptions::default()).await
+        let partitions = hive_partitions(path);
+        let options = ParquetReadOptions::default().table_partition_cols(
+            partitions
+                .into_iter()
+                .map(|k| (k, DataType::Utf8))
+                .collect(),
+        );
+        ctx.read_parquet(p, options).await
     }
     .map_err(|e| format!("{}: {e}", path.display()))?;
     Ok((ctx, df))

@@ -16,7 +16,7 @@ parcel compile orders.yaml --schema orders.csv
 `--schema` reads column names and types from a CSV file, Parquet file, or directory of Parquet files. Without it, parcel reads them from the binding's Parquet data when it is on this machine, and otherwise from the types in `expose`; see [Where column types come from](cli.md#where-column-types-come-from). The command prints the contract name, version, compilation hash, where the types came from, and when each rule runs:
 
 ```text
-purchasing/orders v1  4d7ba39f6ae3c615
+purchasing/orders v1.0.0  f86a461d9788e718
   types     orders.csv
 
   supplier_orders  admit   prunes
@@ -47,6 +47,14 @@ The command prints the report and writes `orders.parcel`, followed by:
 The file contains the compiled contract, its validation plan, and its write plan. It includes the column definitions, compiled rule expressions, hashes, and parcel version needed to load it. Its format is `parcel-compiled/1`, a JSON envelope containing serialized plans and expressions.
 
 Applications load this file without recompiling the YAML. The loader requires the same parcel version that compiled it. For the Rust loading API, see [Compiled contract bytes](rust-artifacts.md#compiledbytes).
+
+## Compile for an engine
+
+```bash
+parcel compile orders.yaml --schema orders.csv --target duckdb -o contracts/orders.parcel
+```
+
+`--target duckdb` or `spark` checks that the contract runs as one query in that engine, then writes what the engine loads: the `.parcel` for DuckDB, a JSON file for Spark. Without `-o`, it prints the governed query. `--source` names the relation the engine reads in place of the binding's. See {doc}`engines`.
 
 ## Inspect the compilation as JSON
 
@@ -102,7 +110,9 @@ parcel compile CONTRACT [--schema SCHEMA] [OPTIONS]
 | --- | --- |
 | `CONTRACT` | Required path to a YAML or JSON contract. |
 | `--schema SCHEMA` | CSV file, Parquet file, or Parquet directory supplying column names and types. Defaults to the binding's local Parquet data, then to `expose`. |
-| `-o FILE`, `--out FILE` | Write a loadable compiled contract to this file. |
+| `-o FILE`, `--out FILE` | Write a loadable compiled contract to this file, or with `--target`, what that engine loads. |
+| `--target ENGINE` | `duckdb` or `spark`: check the contract runs in that engine, and print its query or write what it loads. |
+| `--source RELATION` | With `--target`: the relation the engine reads, in place of the one the binding names. |
 | `--json` | Print compilation details as JSON instead of the text report. |
 | `--sql DIALECT` | Print validation SQL. Dialects: `duckdb`, `postgres`, `mysql`, `sqlite`, `bigquery`, `snowflake`, and `datafusion` (the execution library used by parcel). |
 | `--table NAME` | Table name used in SQL or Substrait output; default `contract_data`. |
